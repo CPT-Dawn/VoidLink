@@ -1,0 +1,38 @@
+[package]
+name = "voidlink"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "A blazing-fast, memory-safe Bluetooth TUI manager for Linux"
+authors = ["Swastik Patel"]
+
+[dependencies]
+# ── TUI ──────────────────────────────────────────────
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# ── Bluetooth ────────────────────────────────────────
+bluer = { version = "0.17", features = ["bluetoothd"] }
+
+# ── Async runtime ────────────────────────────────────
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "sync",
+    "time",
+    "macros",
+] }
+futures = "0.3"
+
+# ── Error handling ───────────────────────────────────
+color-eyre = "0.6"
+
+# ── Logging ──────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
