@@ -290,11 +290,18 @@ impl App {
         }
     }
 
-    /// Show a popup that auto-dismisses after ~4 seconds (240 ticks at 60 Hz).
+    /// Show a transient popup with timeout tuned to message severity.
     fn show_transient_popup(&mut self, popup: Popup) {
+        let ttl = match &popup {
+            Popup::ConnectionResult { success: true, .. } => 180,
+            Popup::ConnectionResult { success: false, .. } => 420,
+            Popup::Error { .. } => 420,
+            Popup::PinDisplay { .. } | Popup::Help => 240,
+        };
+
         self.active_popup = Some(popup);
         self.input_mode = InputMode::Dialog;
-        self.popup_ttl = Some(240);
+        self.popup_ttl = Some(ttl);
     }
 
     /// Re-sort devices by sort key (connected first, then RSSI descending).
