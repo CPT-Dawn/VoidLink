@@ -86,6 +86,13 @@ async fn main() -> Result<()> {
     }
 
     // ── Cleanup ─────────────────────────────────────────────────────────
+    // Stop scanning before exiting so the adapter isn't left in discovery mode.
+    if app.scanning {
+        let _ = bt_cmd_tx.try_send(BtCommand::StopScan);
+        // Give the worker a moment to process the stop command.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     tui::restore()?;
     info!("VoidLink exiting");
     Ok(())

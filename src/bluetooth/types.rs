@@ -107,14 +107,21 @@ impl DeviceInfo {
         self.name.as_deref().unwrap_or(&self.alias)
     }
 
-    /// Effective sort key: connected devices first, then by RSSI descending.
-    /// Devices with no RSSI sink to the bottom.
+    /// Effective sort key: connected first, then paired/trusted, then the rest.
+    /// Within each tier, sort by RSSI descending (strongest signal first).
+    /// Devices with no RSSI sink to the bottom of their tier.
     pub fn sort_key(&self) -> (u8, i16) {
-        let connected_priority = if self.connected { 0 } else { 1 };
+        let tier = if self.connected {
+            0 // highest priority
+        } else if self.paired || self.trusted {
+            1 // known devices
+        } else {
+            2 // unknown / unpaired
+        };
         let rssi = self.rssi.unwrap_or(i16::MIN + 1);
         // Negate RSSI so that higher (closer to 0) values sort first.
         // We use MIN + 1 above to avoid overflow when negating.
-        (connected_priority, rssi.saturating_neg())
+        (tier, rssi.saturating_neg())
     }
 }
 
