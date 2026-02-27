@@ -1,39 +1,35 @@
-//! "Cosmic Dawn" color palette and Nerd Font icon mappings.
-//!
-//! Design principles:
-//! - **No hardcoded backgrounds.** Every style uses `Color::Reset` (or omits
-//!   `.bg()`) so the terminal's native background — including compositor blur —
-//!   shines through.
-//! - Three accent colours: Cyan, Deep Purple, Dawn Red.
-//! - Muted variants for secondary text.
-
 use ratatui::style::{Color, Modifier, Style};
 
-// ─── Cosmic Dawn palette ────────────────────────────────────────────────────
+// ─── Void Aurora palette ────────────────────────────────────────────────────
+//
+// Design: analogous cool spectrum (arctic blue → lavender) with deliberate
+// warm accents (dusty rose, honey gold). Every colour sits at a similar
+// saturation & luminance so they feel balanced on any dark / blurred bg.
+// No hardcoded backgrounds — Color::Reset lets compositor blur shine through.
 
 /// Primary accent — headers, active borders, connected indicators.
-pub const CYAN: Color = Color::Rgb(0, 212, 255); // #00D4FF
+pub const CYAN: Color = Color::Rgb(120, 220, 255); // #78DCFF  arctic sky
 
 /// Secondary accent — selected items, highlights.
-pub const DEEP_PURPLE: Color = Color::Rgb(123, 47, 190); // #7B2FBE
+pub const DEEP_PURPLE: Color = Color::Rgb(180, 160, 255); // #B4A0FF  soft violet
 
-/// Tertiary accent — warnings, disconnect actions, errors.
-pub const DAWN_RED: Color = Color::Rgb(255, 107, 107); // #FF6B6B
+/// Tertiary accent — errors, disconnect actions.
+pub const DAWN_RED: Color = Color::Rgb(255, 140, 160); // #FF8CA0  dusty rose
 
-/// Soft white for primary text.
-pub const TEXT_PRIMARY: Color = Color::Rgb(220, 220, 230); // #DCDCE6
+/// Soft pearl white for primary text (faint violet undertone).
+pub const TEXT_PRIMARY: Color = Color::Rgb(225, 223, 240); // #E1DFF0
 
 /// Dimmed text for secondary labels / inactive items.
-pub const TEXT_DIM: Color = Color::Rgb(130, 130, 150); // #828296
+pub const TEXT_DIM: Color = Color::Rgb(120, 124, 150); // #787C96  cool slate
 
 /// Paired-but-not-connected indicator.
-pub const AMBER: Color = Color::Rgb(255, 183, 77); // #FFB74D
+pub const AMBER: Color = Color::Rgb(255, 200, 120); // #FFC878  warm honey
 
 /// Success / trusted indicator.
-pub const GREEN: Color = Color::Rgb(105, 240, 174); // #69F0AE
+pub const GREEN: Color = Color::Rgb(130, 235, 175); // #82EBAF  fresh mint
 
-/// Spinner / scanning pulse.
-pub const SCANNING_PULSE: Color = Color::Rgb(0, 230, 255); // #00E6FF
+/// Spinner / scanning pulse (brighter sibling of CYAN).
+pub const SCANNING_PULSE: Color = Color::Rgb(100, 230, 255); // #64E6FF  ice glow
 
 // ─── Composite styles ───────────────────────────────────────────────────────
 
@@ -52,7 +48,7 @@ pub fn dim() -> Style {
     Style::default().fg(TEXT_DIM)
 }
 
-/// Currently selected row highlight — deep purple foreground, no bg.
+/// Currently selected row highlight — soft violet reversed bar.
 pub fn selected() -> Style {
     Style::default()
         .fg(DEEP_PURPLE)
@@ -84,9 +80,9 @@ pub fn border_active() -> Style {
     Style::default().fg(CYAN)
 }
 
-/// Inactive border.
+/// Inactive border — slightly lighter than dim text so panes stay legible.
 pub fn border_inactive() -> Style {
-    Style::default().fg(TEXT_DIM)
+    Style::default().fg(Color::Rgb(140, 143, 165)) // #8C8FA5
 }
 
 // ─── RSSI signal strength helpers ───────────────────────────────────────────
@@ -94,12 +90,12 @@ pub fn border_inactive() -> Style {
 /// Return a Nerd Font signal-strength icon and colour for the given RSSI.
 pub fn rssi_display(rssi: Option<i16>) -> (&'static str, Color) {
     match rssi {
-        Some(r) if r >= -50 => ("󰤨", GREEN),       // excellent
-        Some(r) if r >= -60 => ("󰤥", CYAN),        // good
-        Some(r) if r >= -70 => ("󰤢", AMBER),       // fair
-        Some(r) if r >= -80 => ("󰤟", DAWN_RED),    // weak
-        Some(_) => ("󰤯", DAWN_RED),                 // very weak
-        None => ("󰤮", TEXT_DIM),                     // unknown / not in range
+        Some(r) if r >= -50 => ("󰤨", GREEN),    // excellent
+        Some(r) if r >= -60 => ("󰤥", CYAN),     // good
+        Some(r) if r >= -70 => ("󰤢", AMBER),    // fair
+        Some(r) if r >= -80 => ("󰤟", DAWN_RED), // weak
+        Some(_) => ("󰤯", DAWN_RED),             // very weak
+        None => ("󰤮", TEXT_DIM),                // unknown / not in range
     }
 }
 
@@ -122,32 +118,32 @@ pub fn device_icon(icon: Option<&str>, class: Option<u32>) -> &'static str {
     // First try the icon string from BlueZ.
     if let Some(icon) = icon {
         match icon {
-            s if s.contains("audio-headset") || s.contains("audio-headphones") => "\u{f025}",  // 
-            s if s.contains("audio-card") || s.contains("speaker") => "󰓃", // 󰓃
-            s if s.contains("phone") => "\u{f095}",                          // 
-            s if s.contains("computer") => "󰍽",                              // 󰍽
-            s if s.contains("input-keyboard") => "󰌌",                        // 󰌌
-            s if s.contains("input-mouse") => "󰍽",                           // 󰍽
-            s if s.contains("input-gaming") => "󰊗",                          // 󰊗
-            s if s.contains("input-tablet") => "󰓶",                          // 󰓶
-            s if s.contains("camera") => "󰄀",                                // 󰄀
-            s if s.contains("printer") => "󰐪",                               // 󰐪
-            s if s.contains("network") => "󰈀",                               // 󰈀
-            s if s.contains("video-display") || s.contains("monitor") => "󰍹", // 󰍹
-            _ => "󰂯",                                                         // 󰂯 generic BT
+            s if s.contains("audio-headset") || s.contains("audio-headphones") => "\u{f025}", //
+            s if s.contains("audio-card") || s.contains("speaker") => "󰓃",                    // 󰓃
+            s if s.contains("phone") => "\u{f095}",                                           //
+            s if s.contains("computer") => "󰍽",                                               // 󰍽
+            s if s.contains("input-keyboard") => "󰌌",                                         // 󰌌
+            s if s.contains("input-mouse") => "󰍽",                                            // 󰍽
+            s if s.contains("input-gaming") => "󰊗",                                           // 󰊗
+            s if s.contains("input-tablet") => "󰓶",                                           // 󰓶
+            s if s.contains("camera") => "󰄀",                                                 // 󰄀
+            s if s.contains("printer") => "󰐪",                                                // 󰐪
+            s if s.contains("network") => "󰈀",                                                // 󰈀
+            s if s.contains("video-display") || s.contains("monitor") => "󰍹",                 // 󰍹
+            _ => "󰂯", // 󰂯 generic BT
         }
     } else if let Some(cls) = class {
         // Fall back to BT major device class (bits 12..8).
         let major = (cls >> 8) & 0x1F;
         match major {
-            1 => "󰍽",  // Computer
-            2 => "\u{f095}",  // Phone
-            3 => "󰈀",  // LAN / Network Access
-            4 => "󰓃",  // Audio/Video
-            5 => "󰌌",  // Peripheral (keyboard/mouse/joystick)
-            6 => "󰄀",  // Imaging (camera/printer)
-            7 => "󰌚",  // Wearable
-            _ => "󰂯",  // Unknown
+            1 => "󰍽",        // Computer
+            2 => "\u{f095}", // Phone
+            3 => "󰈀",        // LAN / Network Access
+            4 => "󰓃",        // Audio/Video
+            5 => "󰌌",        // Peripheral (keyboard/mouse/joystick)
+            6 => "󰄀",        // Imaging (camera/printer)
+            7 => "󰌚",        // Wearable
+            _ => "󰂯",        // Unknown
         }
     } else {
         "󰂯" // Default Bluetooth icon
