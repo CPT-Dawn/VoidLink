@@ -18,7 +18,7 @@ pub fn render(frame: &mut Frame, app: &App, popup: &Popup) {
                 "  Error ",
                 message,
                 theme::error(),
-                theme::DAWN_RED,
+                theme::dawn_red(),
                 *slide,
             );
         }
@@ -29,9 +29,9 @@ pub fn render(frame: &mut Frame, app: &App, popup: &Popup) {
             ..
         } => {
             let (title, style, color) = if *success {
-                (" 󰂱 Connected ", theme::connected(), theme::CYAN)
+                (" 󰂱 Connected ", theme::connected(), theme::cyan())
             } else {
-                (" 󰅙 Connection Failed ", theme::error(), theme::DAWN_RED)
+                (" 󰅙 Connection Failed ", theme::error(), theme::dawn_red())
             };
             render_status_dialog(frame, title, message, style, color, *slide);
         }
@@ -43,14 +43,14 @@ pub fn render(frame: &mut Frame, app: &App, popup: &Popup) {
             let block = Block::default()
                 .title(Span::styled(" 󰌾 Pairing PIN ", theme::title()))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme::DEEP_PURPLE));
+                .border_style(Style::default().fg(theme::deep_purple()));
 
             let content = vec![
                 Line::from(""),
                 Line::from(Span::styled(
                     format!("  PIN: {pin}"),
                     Style::default()
-                        .fg(theme::CYAN)
+                        .fg(theme::cyan())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
@@ -107,7 +107,7 @@ fn render_status_dialog(
             Span::styled(
                 "  Esc ",
                 Style::default()
-                    .fg(theme::CYAN)
+                    .fg(theme::cyan())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled("dismiss", theme::dim()),

@@ -1,0 +1,122 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  VoidLink — Configuration
+# ──────────────────────────────────────────────────────────────────────────────
+#
+#  Location : ~/.config/voidlink/config.toml
+#  Docs     : https://github.com/cptdawn/VoidLink
+#
+#  This file is auto-generated on first launch with sensible defaults.
+#  All sections and keys are OPTIONAL — missing values silently fall back
+#  to the compiled-in defaults shown below.
+#
+#  Colors   : standard "#RRGGBB" hex notation.
+#  Keys     : single characters ("q", "/", "G") or named keys
+#             ("Enter", "Esc", "Tab", "Space", "Backspace",
+#              "Up", "Down", "Left", "Right", "Home", "End",
+#              "PageUp", "PageDown", "Delete", "Insert").
+
+# ── General ──────────────────────────────────────────────────────────────────
+
+[general]
+
+# Render tick rate in milliseconds.  Lower = smoother animations, more CPU.
+# Sweet spot for most machines is 16 (~60 FPS).  Range: 4–200.
+tick_rate_ms = 16
+
+# Automatically begin scanning for devices when VoidLink starts.
+scan_on_startup = false
+
+# Hide devices that have not reported a friendly name (address-only entries).
+# Useful for de-cluttering when many unknown BLE advertisers are in range.
+hide_unnamed_devices = false
+
+# Width of the device-list pane as a percentage of terminal width.
+# The detail panel fills the remaining space.  Range: 20–80.
+device_list_percent = 55
+
+# ── Bluetooth ────────────────────────────────────────────────────────────────
+
+[bluetooth]
+
+# Automatically mark a device as "trusted" after a successful pair.
+# Trusted devices are allowed to reconnect on their own in the future.
+auto_trust_on_pair = true
+
+# Timeout (seconds) for the full connect lifecycle (pair → trust → connect).
+# If the operation exceeds this, it is aborted with a timeout error.
+# Range: 5–120.
+connection_timeout_secs = 30
+
+# ── Notifications ────────────────────────────────────────────────────────────
+
+[notifications]
+
+# How long a *success* toast (e.g. "Connected") stays visible (ms).
+success_duration_ms = 3000
+
+# How long an *error* toast stays visible (ms).
+error_duration_ms = 7000
+
+# Popup slide-in speed per tick (0.01–1.0).  Higher = faster entrance.
+slide_speed = 0.08
+
+# ── Theme — Void Aurora ──────────────────────────────────────────────────────
+#
+# A palette engineered for transparent / blurred terminals.  No solid
+# backgrounds are ever rendered — only foreground + modifier styles — so
+# your compositor blur, opacity, and wallpaper always shine through.
+#
+# All default colours sit at matched saturation & luminance so they
+# complement each other naturally.
+
+[theme.palette]
+
+# Primary accent — headers, active borders, connected indicators.
+accent_primary = "#78DCFF" # arctic sky
+
+# Secondary accent — selection highlight, focused elements.
+accent_secondary = "#B4A0FF" # soft violet
+
+# Error / destructive-action accent.
+accent_error = "#FF8CA0" # dusty rose
+
+# Primary body text.
+text_primary = "#E1DFF0" # pearl white
+
+# Dimmed / secondary text.
+text_dim = "#787C96" # cool slate
+
+# Paired-but-not-connected indicator.
+paired = "#FFC878" # warm honey
+
+# Success / trusted indicator.
+success = "#82EBAF" # fresh mint
+
+# Scanning spinner pulse colour.
+scanning = "#64E6FF" # ice glow
+
+# Inactive pane border colour.
+border_inactive = "#8C8FA5" # soft graphite
+
+# ── Keybindings ──────────────────────────────────────────────────────────────
+#
+# Remap any action to a different key.  Arrow keys always work for
+# navigation regardless of these settings.  Ctrl+C always quits.
+
+[keybindings]
+
+quit = "q"
+nav_down = "j"
+nav_up = "k"
+jump_top = "g"
+jump_bottom = "G"
+search = "/"
+help = "?"
+toggle_adapter = "a"
+toggle_scan = "s"
+connect_toggle = "Enter"
+disconnect = "d"
+pair = "p"
+trust = "t"
+remove = "r"
+refresh = "R"

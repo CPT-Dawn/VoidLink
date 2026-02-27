@@ -16,10 +16,10 @@ pub fn render(frame: &mut Frame, tick: u64, area: Rect, label: &str) {
         Span::styled(
             format!(" {spinner_char} "),
             Style::default()
-                .fg(theme::SCANNING_PULSE)
+                .fg(theme::scanning_pulse())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(label, Style::default().fg(theme::CYAN)),
+        Span::styled(label, Style::default().fg(theme::cyan())),
     ]);
 
     let paragraph = Paragraph::new(line);

@@ -15,38 +15,44 @@ pub fn render(frame: &mut Frame, _app: &App) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(Span::styled(
-            " 󰋖 Keybindings ",
-            theme::title(),
-        ))
+        .title(Span::styled(" 󰋖 Keybindings ", theme::title()))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::DEEP_PURPLE));
+        .border_style(Style::default().fg(theme::deep_purple()));
 
     let keybindings = vec![
-        ("Navigation", vec![
-            ("j / ↓", "Move cursor down"),
-            ("k / ↑", "Move cursor up"),
-            ("g", "Jump to top"),
-            ("G", "Jump to bottom"),
-        ]),
-        ("Device Actions", vec![
-            ("Enter", "Connect / Disconnect (toggle)"),
-            ("p", "Pair with device"),
-            ("t", "Toggle trusted"),
-            ("d", "Disconnect device"),
-            ("r", "Remove / forget device"),
-            ("R", "Refresh device info"),
-        ]),
-        ("Adapter", vec![
-            ("a", "Toggle adapter power"),
-            ("s", "Toggle scanning"),
-        ]),
-        ("Other", vec![
-            ("/", "Search devices"),
-            ("?", "Toggle this help"),
-            ("q", "Quit VoidLink"),
-            ("Esc", "Dismiss popup / exit search"),
-        ]),
+        (
+            "Navigation",
+            vec![
+                ("j / ↓", "Move cursor down"),
+                ("k / ↑", "Move cursor up"),
+                ("g", "Jump to top"),
+                ("G", "Jump to bottom"),
+            ],
+        ),
+        (
+            "Device Actions",
+            vec![
+                ("Enter", "Connect / Disconnect (toggle)"),
+                ("p", "Pair with device"),
+                ("t", "Toggle trusted"),
+                ("d", "Disconnect device"),
+                ("r", "Remove / forget device"),
+                ("R", "Refresh device info"),
+            ],
+        ),
+        (
+            "Adapter",
+            vec![("a", "Toggle adapter power"), ("s", "Toggle scanning")],
+        ),
+        (
+            "Other",
+            vec![
+                ("/", "Search devices"),
+                ("?", "Toggle this help"),
+                ("q", "Quit VoidLink"),
+                ("Esc", "Dismiss popup / exit search"),
+            ],
+        ),
     ];
 
     let mut lines = vec![Line::from("")];
@@ -55,7 +61,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
         lines.push(Line::from(Span::styled(
             format!("  ── {section} ──"),
             Style::default()
-                .fg(theme::CYAN)
+                .fg(theme::cyan())
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
@@ -65,7 +71,7 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 Span::styled(
                     format!("    {key:<12}"),
                     Style::default()
-                        .fg(theme::DEEP_PURPLE)
+                        .fg(theme::deep_purple())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(*desc, theme::list_item()),

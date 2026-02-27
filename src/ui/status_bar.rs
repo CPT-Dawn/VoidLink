@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             format!("{frame_char} Scanning "),
             ratatui::style::Style::default()
-                .fg(theme::SCANNING_PULSE)
+                .fg(theme::scanning_pulse())
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     } else {
@@ -56,7 +56,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             format!("/ {}", app.search_query),
             ratatui::style::Style::default()
-                .fg(theme::CYAN)
+                .fg(theme::cyan())
                 .add_modifier(ratatui::style::Modifier::ITALIC),
         ));
         spans.push(Span::styled("█", theme::connected())); // cursor

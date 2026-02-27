@@ -17,9 +17,13 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::config;
 
 /// Render the entire UI.
 pub fn render(frame: &mut Frame, app: &App) {
+    let list_pct = config::get().general.device_list_percent;
+    let detail_pct = 100u16.saturating_sub(list_pct);
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -36,8 +40,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(55), // device list
-            Constraint::Percentage(45), // detail panel
+            Constraint::Percentage(list_pct),  // device list
+            Constraint::Percentage(detail_pct), // detail panel
         ])
         .split(outer[1]);
 

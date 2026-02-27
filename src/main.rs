@@ -9,6 +9,7 @@
 
 mod app;
 mod bluetooth;
+mod config;
 mod event;
 mod theme;
 mod tui;
@@ -37,6 +38,9 @@ async fn main() -> Result<()> {
 
     info!("VoidLink starting");
 
+    // ── Configuration ────────────────────────────────────────────────────
+    config::init()?;
+
     // ── Channel setup ───────────────────────────────────────────────────
     let (bt_cmd_tx, bt_cmd_rx) = mpsc::channel::<BtCommand>(32);
     let (bt_evt_tx, bt_evt_rx) = mpsc::channel(64);
@@ -52,6 +56,11 @@ async fn main() -> Result<()> {
     // ── App state ───────────────────────────────────────────────────────
     let mut app = App::new(bt_cmd_tx.clone());
     let mut events = event::EventHandler::new(bt_evt_rx);
+
+    // ── Auto-scan on startup (if configured) ────────────────────────────
+    if config::get().general.scan_on_startup {
+        let _ = bt_cmd_tx.try_send(BtCommand::StartScan);
+    }
 
     // ── Main event loop ─────────────────────────────────────────────────
     while app.running {

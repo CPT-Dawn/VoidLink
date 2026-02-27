@@ -130,20 +130,27 @@ impl App {
 
     // ── Filtered device list ────────────────────────────────────────────
 
-    /// Return the device list filtered by the current search query.
+    /// Return the device list filtered by the current search query
+    /// and the `hide_unnamed_devices` config setting.
     pub fn filtered_devices(&self) -> Vec<&DeviceInfo> {
-        if self.search_query.is_empty() {
-            self.devices.iter().collect()
-        } else {
-            let query = self.search_query.to_lowercase();
-            self.devices
-                .iter()
-                .filter(|d| {
-                    d.display_name().to_lowercase().contains(&query)
-                        || d.address.to_string().to_lowercase().contains(&query)
-                })
-                .collect()
-        }
+        let hide_unnamed = crate::config::get().general.hide_unnamed_devices;
+
+        self.devices
+            .iter()
+            .filter(|d| {
+                // Optionally hide unnamed (address-only) devices.
+                if hide_unnamed && d.name.is_none() {
+                    return false;
+                }
+                // Apply search filter.
+                if self.search_query.is_empty() {
+                    return true;
+                }
+                let query = self.search_query.to_lowercase();
+                d.display_name().to_lowercase().contains(&query)
+                    || d.address.to_string().to_lowercase().contains(&query)
+            })
+            .collect()
     }
 
     /// The currently selected device (if any).
@@ -172,7 +179,8 @@ impl App {
         if let Some(popup) = &mut self.active_popup {
             if let Some(slide) = popup.slide_mut() {
                 if *slide < 1.0 {
-                    *slide = (*slide + 0.08).min(1.0);
+                    let speed = crate::config::get().notifications.slide_speed;
+                    *slide = (*slide + speed).min(1.0);
                 }
             }
         }
@@ -292,16 +300,20 @@ impl App {
 
     /// Show a transient popup with timeout tuned to message severity.
     fn show_transient_popup(&mut self, popup: Popup) {
-        let ttl = match &popup {
-            Popup::ConnectionResult { success: true, .. } => 180,
-            Popup::ConnectionResult { success: false, .. } => 420,
-            Popup::Error { .. } => 420,
-            Popup::PinDisplay { .. } | Popup::Help => 240,
+        let notif = &crate::config::get().notifications;
+        let tick_ms = crate::config::get().general.tick_rate_ms.max(1);
+
+        let duration_ms = match &popup {
+            Popup::ConnectionResult { success: true, .. } => notif.success_duration_ms,
+            Popup::ConnectionResult { success: false, .. } | Popup::Error { .. } => {
+                notif.error_duration_ms
+            }
+            Popup::PinDisplay { .. } | Popup::Help => notif.success_duration_ms,
         };
 
         self.active_popup = Some(popup);
         self.input_mode = InputMode::Dialog;
-        self.popup_ttl = Some(ttl);
+        self.popup_ttl = Some(duration_ms / tick_ms);
     }
 
     /// Re-sort devices by sort key (connected first, then RSSI descending).
@@ -321,30 +333,36 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> AppAction {
+        let kb = &crate::config::get().keys;
+
+        // Ctrl+C always quits (system convention, non-configurable).
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return AppAction::Quit;
+        }
+
         match key.code {
             // ── Quit ────────────────────────────────────────────────────
-            KeyCode::Char('q') => AppAction::Quit,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => AppAction::Quit,
+            c if c == kb.quit => AppAction::Quit,
 
             // ── Navigation ──────────────────────────────────────────────
-            KeyCode::Char('j') | KeyCode::Down => {
+            c if c == kb.nav_down || c == KeyCode::Down => {
                 let len = self.filtered_devices().len();
                 if len > 0 {
                     self.selected_index = (self.selected_index + 1).min(len - 1);
                 }
                 AppAction::Consumed
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            c if c == kb.nav_up || c == KeyCode::Up => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                 }
                 AppAction::Consumed
             }
-            KeyCode::Char('g') => {
+            c if c == kb.jump_top => {
                 self.selected_index = 0;
                 AppAction::Consumed
             }
-            KeyCode::Char('G') => {
+            c if c == kb.jump_bottom => {
                 let len = self.filtered_devices().len();
                 if len > 0 {
                     self.selected_index = len - 1;
@@ -353,14 +371,14 @@ impl App {
             }
 
             // ── Search ──────────────────────────────────────────────────
-            KeyCode::Char('/') => {
+            c if c == kb.search => {
                 self.input_mode = InputMode::Search;
                 self.search_query.clear();
                 AppAction::Consumed
             }
 
             // ── Help ────────────────────────────────────────────────────
-            KeyCode::Char('?') => {
+            c if c == kb.help => {
                 self.active_popup = Some(Popup::Help);
                 self.input_mode = InputMode::Dialog;
                 self.popup_ttl = None;
@@ -368,14 +386,14 @@ impl App {
             }
 
             // ── Adapter controls ────────────────────────────────────────
-            KeyCode::Char('a') => {
+            c if c == kb.toggle_adapter => {
                 if self.adapter.powered {
                     AppAction::BtCommand(BtCommand::DisableAdapter)
                 } else {
                     AppAction::BtCommand(BtCommand::EnableAdapter)
                 }
             }
-            KeyCode::Char('s') => {
+            c if c == kb.toggle_scan => {
                 if self.scanning {
                     AppAction::BtCommand(BtCommand::StopScan)
                 } else {
@@ -384,7 +402,7 @@ impl App {
             }
 
             // ── Device actions ──────────────────────────────────────────
-            KeyCode::Enter => {
+            c if c == kb.connect_toggle => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     if device.connected {
@@ -396,7 +414,7 @@ impl App {
                     AppAction::Consumed
                 }
             }
-            KeyCode::Char('d') => {
+            c if c == kb.disconnect => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     AppAction::BtCommand(BtCommand::Disconnect(addr))
@@ -404,7 +422,7 @@ impl App {
                     AppAction::Consumed
                 }
             }
-            KeyCode::Char('p') => {
+            c if c == kb.pair => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     AppAction::BtCommand(BtCommand::Pair(addr))
@@ -412,7 +430,7 @@ impl App {
                     AppAction::Consumed
                 }
             }
-            KeyCode::Char('t') => {
+            c if c == kb.trust => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     AppAction::BtCommand(BtCommand::Trust(addr))
@@ -420,7 +438,7 @@ impl App {
                     AppAction::Consumed
                 }
             }
-            KeyCode::Char('r') => {
+            c if c == kb.remove => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     AppAction::BtCommand(BtCommand::RemoveDevice(addr))
@@ -428,7 +446,7 @@ impl App {
                     AppAction::Consumed
                 }
             }
-            KeyCode::Char('R') => {
+            c if c == kb.refresh => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     AppAction::BtCommand(BtCommand::RefreshDevice(addr))

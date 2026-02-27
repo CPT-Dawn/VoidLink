@@ -391,23 +391,40 @@ async fn handle_adapter_event(
 }
 
 /// Full connection lifecycle: pair (if needed) → trust → connect.
+/// Respects the `auto_trust_on_pair` and `connection_timeout_secs` config.
 async fn connect_lifecycle(device: &Device) -> bluer::Result<()> {
-    // Step 1: Pair if not already paired.
-    if !device.is_paired().await.unwrap_or(false) {
-        info!("Pairing with {}…", device.address());
-        device.pair().await?;
+    let bt_cfg = &crate::config::get().bluetooth;
+    let timeout = std::time::Duration::from_secs(bt_cfg.connection_timeout_secs);
+
+    let fut = async {
+        // Step 1: Pair if not already paired.
+        if !device.is_paired().await.unwrap_or(false) {
+            info!("Pairing with {}…", device.address());
+            device.pair().await?;
+        }
+
+        // Step 2: Trust if configured and not already trusted.
+        if bt_cfg.auto_trust_on_pair && !device.is_trusted().await.unwrap_or(false) {
+            info!("Trusting {}…", device.address());
+            device.set_trusted(true).await?;
+        }
+
+        // Step 3: Connect.
+        info!("Connecting to {}…", device.address());
+        device.connect().await?;
+
+        info!("Connected to {}", device.address());
+        Ok(())
+    };
+
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(bluer::Error {
+            kind: bluer::ErrorKind::Failed,
+            message: format!(
+                "Connection timed out after {}s",
+                bt_cfg.connection_timeout_secs
+            ),
+        }),
     }
-
-    // Step 2: Trust if not already trusted.
-    if !device.is_trusted().await.unwrap_or(false) {
-        info!("Trusting {}…", device.address());
-        device.set_trusted(true).await?;
-    }
-
-    // Step 3: Connect.
-    info!("Connecting to {}…", device.address());
-    device.connect().await?;
-
-    info!("Connected to {}", device.address());
-    Ok(())
 }

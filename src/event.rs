@@ -13,9 +13,6 @@ use tokio::sync::mpsc;
 
 use crate::bluetooth::types::BtEvent;
 
-/// Target tick rate — ~60 FPS for smooth animations.
-const TICK_RATE: Duration = Duration::from_millis(16);
-
 /// Unified event type consumed by the TUI main loop.
 #[derive(Debug)]
 pub enum Event {
@@ -25,7 +22,7 @@ pub enum Event {
     /// Terminal was resized.
     #[allow(dead_code)]
     Resize(u16, u16),
-    /// Animation / state tick (~60 Hz).
+    /// Animation / state tick.
     Tick,
     /// An event from the Bluetooth worker task.
     Bluetooth(BtEvent),
@@ -44,7 +41,8 @@ pub struct EventHandler {
 
 impl EventHandler {
     pub fn new(bt_rx: mpsc::Receiver<BtEvent>) -> Self {
-        let mut tick_interval = tokio::time::interval(TICK_RATE);
+        let tick_ms = crate::config::get().general.tick_rate_ms;
+        let mut tick_interval = tokio::time::interval(Duration::from_millis(tick_ms));
         // Don't try to "catch up" missed ticks — just keep going.
         tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
