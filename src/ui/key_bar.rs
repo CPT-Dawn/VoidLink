@@ -1,7 +1,7 @@
 //! Persistent key instruction bar at the bottom of the screen.
 //!
 //! Shows context-aware keybindings in a compact, styled row that adapts
-//! to the current input mode (Normal, Search, Dialog).
+//! to the current input mode (Normal, Search, Dialog, Rename).
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -18,6 +18,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::Normal => normal_hints(app),
         InputMode::Search => search_hints(),
         InputMode::Dialog => dialog_hints(),
+        InputMode::Rename => rename_hints(),
     };
 
     let line = Line::from(spans);
@@ -46,7 +47,7 @@ fn sep() -> Span<'static> {
 }
 
 fn normal_hints(app: &App) -> Vec<Span<'static>> {
-    let mut hints: Vec<Span<'static>> = Vec::with_capacity(32);
+    let mut hints: Vec<Span<'static>> = Vec::with_capacity(40);
 
     hints.push(Span::raw(" "));
 
@@ -84,6 +85,9 @@ fn normal_hints(app: &App) -> Vec<Span<'static>> {
     hints.push(key("r"));
     hints.push(desc(" Remove "));
 
+    hints.push(key("A"));
+    hints.push(desc(" Rename "));
+
     hints.push(sep());
 
     // Adapter.
@@ -102,6 +106,9 @@ fn normal_hints(app: &App) -> Vec<Span<'static>> {
         hints.push(key("s"));
         hints.push(desc(" Scan "));
     }
+
+    hints.push(key("S"));
+    hints.push(desc(" Sort "));
 
     hints.push(sep());
 
@@ -126,7 +133,7 @@ fn search_hints() -> Vec<Span<'static>> {
         key("Esc"),
         desc(" Cancel "),
         sep(),
-        desc("Type to filter devices…"),
+        desc("Type to filter devices… (prefix / for regex)"),
     ]
 }
 
@@ -138,5 +145,18 @@ fn dialog_hints() -> Vec<Span<'static>> {
         sep(),
         key("⏎"),
         desc(" OK "),
+    ]
+}
+
+fn rename_hints() -> Vec<Span<'static>> {
+    vec![
+        Span::raw(" "),
+        key("⏎"),
+        desc(" Confirm Rename "),
+        sep(),
+        key("Esc"),
+        desc(" Cancel "),
+        sep(),
+        desc("Type new alias…"),
     ]
 }

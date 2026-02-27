@@ -32,6 +32,8 @@ pub enum BtCommand {
     RemoveDevice(Address),
     /// Re-snapshot a single device's properties.
     RefreshDevice(Address),
+    /// Set a custom alias (friendly name) on a device.
+    SetAlias(Address, String),
 }
 
 // ─── Worker → UI events ─────────────────────────────────────────────────────

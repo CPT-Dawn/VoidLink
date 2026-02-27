@@ -50,6 +50,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("  Idle ", theme::dim()));
     }
 
+    // Sort mode indicator.
+    let sort_icon = theme::sort_icon(app.sort_mode);
+    let sort_label = app.sort_mode.label();
+    spans.push(Span::styled("│ ", theme::dim()));
+    spans.push(Span::styled(
+        format!("{sort_icon} {sort_label} "),
+        ratatui::style::Style::default()
+            .fg(theme::deep_purple())
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+
     // Search indicator.
     if app.input_mode == InputMode::Search {
         spans.push(Span::styled("│ ", theme::dim()));
@@ -60,10 +71,29 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::ITALIC),
         ));
         spans.push(Span::styled("█", theme::connected())); // cursor
+
+        // Inline search error (regex).
+        if !app.search_error.is_empty() {
+            spans.push(Span::styled(
+                format!("  {}", app.search_error),
+                theme::error(),
+            ));
+        }
     }
 
-    // Device count (right-aligned via padding — simple approach).
-    let device_count = app.filtered_devices().len();
+    // Rename indicator.
+    if app.input_mode == InputMode::Rename {
+        spans.push(Span::styled("│ ", theme::dim()));
+        spans.push(Span::styled(
+            format!(" Rename: {}█", app.rename_buffer),
+            ratatui::style::Style::default()
+                .fg(theme::cyan())
+                .add_modifier(ratatui::style::Modifier::ITALIC),
+        ));
+    }
+
+    // Device count (using cached value — no allocation).
+    let device_count = app.filtered_count();
     spans.push(Span::styled("│ ", theme::dim()));
     spans.push(Span::styled(
         format!("{device_count} devices"),

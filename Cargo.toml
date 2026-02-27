@@ -29,6 +29,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 directories = "6"
 
+# ── Search ───────────────────────────────────────────
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
+
 # ── Error handling ───────────────────────────────────
 color-eyre = "0.6"
 

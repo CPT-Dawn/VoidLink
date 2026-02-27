@@ -34,6 +34,14 @@ hide_unnamed_devices = false
 # The detail panel fills the remaining space.  Range: 20–80.
 device_list_percent = 55
 
+# Device sort order.  Cycle at runtime with `S`.
+# Options: "default" (connected→paired→rssi), "name", "rssi", "address".
+sort_mode = "default"
+
+# Search mode for the `/` filter.
+# Options: "smart" (auto-detect regex), "plain" (substring), "regex" (always).
+search_mode = "smart"
+
 # ── Bluetooth ────────────────────────────────────────────────────────────────
 
 [bluetooth]
@@ -60,43 +68,42 @@ error_duration_ms = 7000
 # Popup slide-in speed per tick (0.01–1.0).  Higher = faster entrance.
 slide_speed = 0.08
 
-# ── Theme — Void Aurora ──────────────────────────────────────────────────────
+# ── Theme — Cosmic Dawn ──────────────────────────────────────────────────────
 #
-# A palette engineered for transparent / blurred terminals.  No solid
-# backgrounds are ever rendered — only foreground + modifier styles — so
-# your compositor blur, opacity, and wallpaper always shine through.
+# A high-contrast palette engineered for transparent / blurred terminals.
+# No solid backgrounds are ever rendered — only foreground + modifier styles
+# — so your compositor blur, opacity, and wallpaper always shine through.
 #
-# All default colours sit at matched saturation & luminance so they
-# complement each other naturally.
+# Colours are tuned for maximum legibility against dark, translucent surfaces.
 
 [theme.palette]
 
 # Primary accent — headers, active borders, connected indicators.
-accent_primary = "#78DCFF" # arctic sky
+accent_primary = "#00E5FF" # plasma cyan
 
 # Secondary accent — selection highlight, focused elements.
-accent_secondary = "#B4A0FF" # soft violet
+accent_secondary = "#BB86FC" # nebula violet
 
 # Error / destructive-action accent.
-accent_error = "#FF8CA0" # dusty rose
+accent_error = "#FF4545" # dawn red
 
 # Primary body text.
-text_primary = "#E1DFF0" # pearl white
+text_primary = "#E8E6F0" # starlight
 
 # Dimmed / secondary text.
-text_dim = "#787C96" # cool slate
+text_dim = "#6B6F85" # cosmic dust
 
 # Paired-but-not-connected indicator.
-paired = "#FFC878" # warm honey
+paired = "#FFB74D" # solar amber
 
 # Success / trusted indicator.
-success = "#82EBAF" # fresh mint
+success = "#69F0AE" # aurora green
 
 # Scanning spinner pulse colour.
-scanning = "#64E6FF" # ice glow
+scanning = "#18FFFF" # pulse cyan
 
 # Inactive pane border colour.
-border_inactive = "#8C8FA5" # soft graphite
+border_inactive = "#4A4E69" # void edge
 
 # ── Keybindings ──────────────────────────────────────────────────────────────
 #
@@ -120,3 +127,5 @@ pair = "p"
 trust = "t"
 remove = "r"
 refresh = "R"
+cycle_sort = "S"
+rename = "A"

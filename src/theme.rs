@@ -1,4 +1,4 @@
-//! "Void Aurora" palette and Nerd Font icon mappings.
+//! "Cosmic Dawn" palette, animation easing, and Nerd Font icon mappings.
 //!
 //! All colors are resolved from the user's config at startup.  Style
 //! functions read from the global `config::get()` singleton — the only
@@ -20,42 +20,42 @@ fn palette() -> &'static config::Palette {
     &config::get().theme.palette
 }
 
-/// Primary accent — arctic sky.
+/// Primary accent — plasma cyan.
 pub fn cyan() -> Color {
     palette().accent_primary
 }
 
-/// Secondary accent — soft violet.
+/// Secondary accent — nebula violet.
 pub fn deep_purple() -> Color {
     palette().accent_secondary
 }
 
-/// Error accent — dusty rose.
+/// Error accent — dawn red.
 pub fn dawn_red() -> Color {
     palette().accent_error
 }
 
-/// Primary body text — pearl white.
+/// Primary body text — starlight.
 pub fn text_primary() -> Color {
     palette().text_primary
 }
 
-/// Dimmed / secondary text — cool slate.
+/// Dimmed / secondary text — cosmic dust.
 pub fn text_dim() -> Color {
     palette().text_dim
 }
 
-/// Paired-but-not-connected — warm honey.
+/// Paired-but-not-connected — solar amber.
 pub fn amber() -> Color {
     palette().paired
 }
 
-/// Success / trusted — fresh mint.
+/// Success / trusted — aurora green.
 pub fn green() -> Color {
     palette().success
 }
 
-/// Scanning spinner pulse — ice glow.
+/// Scanning spinner pulse — pulse cyan.
 pub fn scanning_pulse() -> Color {
     palette().scanning
 }
@@ -184,7 +184,32 @@ pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", 
 
 /// Get the current spinner frame for a given tick count.
 pub fn spinner_frame(tick: u64) -> &'static str {
-    SPINNER_FRAMES[(tick as usize) % SPINNER_FRAMES.len()]
+    let idx = (tick as usize) % SPINNER_FRAMES.len();
+    // SAFETY: modulo guarantees idx < len for non-empty slice (compile-time constant).
+    SPINNER_FRAMES.get(idx).copied().unwrap_or("⠋")
+}
+
+// ─── Animation easing ───────────────────────────────────────────────────────
+
+/// Cubic ease-out: fast start, smooth deceleration.
+/// Input `t` in [0.0, 1.0], output in [0.0, 1.0].
+#[inline]
+pub fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Exponential ease-out: snappy entrance with gentle settle.
+/// Input `t` in [0.0, 1.0], output in [0.0, 1.0].
+#[inline]
+#[allow(dead_code)]
+pub fn ease_out_expo(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t >= 1.0 {
+        1.0
+    } else {
+        1.0 - 2.0_f32.powf(-10.0 * t)
+    }
 }
 
 // ─── Battery display ────────────────────────────────────────────────────────
@@ -198,5 +223,15 @@ pub fn battery_display(pct: Option<u8>) -> (&'static str, Color) {
         Some(p) if p >= 20 => ("󰁻", dawn_red()),
         Some(_) => ("󰁺", dawn_red()),
         None => ("󰂃", text_dim()),
+    }
+}
+
+/// Return a Nerd Font sort icon for the active sort mode.
+pub fn sort_icon(mode: crate::config::SortMode) -> &'static str {
+    match mode {
+        crate::config::SortMode::Default => "󰒺",
+        crate::config::SortMode::Name => "󰈏",
+        crate::config::SortMode::Rssi => "󰤨",
+        crate::config::SortMode::Address => "󰩟",
     }
 }

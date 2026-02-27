@@ -56,27 +56,30 @@ impl EventHandler {
     /// Await the next event from any source. Returns `None` only when all
     /// sources are exhausted (which shouldn't happen during normal operation).
     pub async fn next(&mut self) -> Result<Event> {
-        tokio::select! {
-            // ── Bluetooth events (highest priority) ─────────────────────
-            Some(bt_event) = self.bt_rx.recv() => {
-                Ok(Event::Bluetooth(bt_event))
-            }
-
-            // ── Terminal events ─────────────────────────────────────────
-            Some(ct_result) = self.crossterm_stream.next() => {
-                match ct_result? {
-                    CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                        Ok(Event::Key(key))
-                    }
-                    CrosstermEvent::Resize(w, h) => Ok(Event::Resize(w, h)),
-                    // Swallow key release/repeat and other events.
-                    _ => Ok(Event::Tick),
+        loop {
+            tokio::select! {
+                // ── Bluetooth events (highest priority) ─────────────────
+                Some(bt_event) = self.bt_rx.recv() => {
+                    return Ok(Event::Bluetooth(bt_event));
                 }
-            }
 
-            // ── Tick timer ──────────────────────────────────────────────
-            _ = self.tick_interval.tick() => {
-                Ok(Event::Tick)
+                // ── Terminal events ─────────────────────────────────────
+                Some(ct_result) = self.crossterm_stream.next() => {
+                    match ct_result? {
+                        CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+                            return Ok(Event::Key(key));
+                        }
+                        CrosstermEvent::Resize(w, h) => return Ok(Event::Resize(w, h)),
+                        // Swallow key release/repeat — loop again instead
+                        // of emitting a Tick that would trigger a redraw.
+                        _ => continue,
+                    }
+                }
+
+                // ── Tick timer ──────────────────────────────────────────
+                _ = self.tick_interval.tick() => {
+                    return Ok(Event::Tick);
+                }
             }
         }
     }

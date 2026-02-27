@@ -33,23 +33,35 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
+    // Destructure to avoid raw indexing panics.
+    let [status_area, content_area, keybar_area] =
+        match <[ratatui::layout::Rect; 3]>::try_from(outer.as_ref()) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+
     // ── Status bar ──────────────────────────────────────────────────────
-    status_bar::render(frame, app, outer[0]);
+    status_bar::render(frame, app, status_area);
 
     // ── Main content: device list + detail panel ────────────────────────
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(list_pct),  // device list
+            Constraint::Percentage(list_pct),   // device list
             Constraint::Percentage(detail_pct), // detail panel
         ])
-        .split(outer[1]);
+        .split(content_area);
 
-    device_list::render(frame, app, main[0]);
-    detail_panel::render(frame, app, main[1]);
+    let [list_area, detail_area] = match <[ratatui::layout::Rect; 2]>::try_from(main.as_ref()) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    device_list::render(frame, app, list_area);
+    detail_panel::render(frame, app, detail_area);
 
     // ── Key hints bar (bottom) ──────────────────────────────────────────
-    key_bar::render(frame, app, outer[2]);
+    key_bar::render(frame, app, keybar_area);
 
     // ── Popup overlay (rendered last so it's on top) ────────────────────
     if let Some(ref popup_data) = app.active_popup {

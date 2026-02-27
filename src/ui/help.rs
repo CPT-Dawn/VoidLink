@@ -1,6 +1,6 @@
 //! Help overlay — keybinding reference.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -38,19 +38,24 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 ("d", "Disconnect device"),
                 ("r", "Remove / forget device"),
                 ("R", "Refresh device info"),
+                ("A", "Rename device alias"),
             ],
         ),
         (
             "Adapter",
-            vec![("a", "Toggle adapter power"), ("s", "Toggle scanning")],
+            vec![
+                ("a", "Toggle adapter power"),
+                ("s", "Toggle scanning"),
+                ("S", "Cycle sort mode"),
+            ],
         ),
         (
             "Other",
             vec![
-                ("/", "Search devices"),
+                ("/", "Search (regex: start with /)"),
                 ("?", "Toggle this help"),
                 ("q", "Quit VoidLink"),
-                ("Esc", "Dismiss popup / exit search"),
+                ("Esc", "Dismiss popup / exit mode"),
             ],
         ),
     ];
@@ -92,23 +97,11 @@ pub fn render(frame: &mut Frame, _app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-/// Compute a centered rectangle.
+/// Compute a centered rectangle (safe — no raw indexing).
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vert = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vert[1])[1]
+    let width = (area.width as u32 * percent_x.min(100) as u32 / 100) as u16;
+    let height = (area.height as u32 * percent_y.min(100) as u32 / 100) as u16;
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect { x, y, width, height }
 }

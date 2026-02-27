@@ -4,9 +4,11 @@
 //! from the main event loop — no `Arc<Mutex<>>` needed.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use regex::Regex;
 use tokio::sync::mpsc;
 
 use crate::bluetooth::types::*;
+use crate::config::{SearchMode, SortMode};
 
 // ─── Input modes ────────────────────────────────────────────────────────────
 
@@ -19,6 +21,8 @@ pub enum InputMode {
     Search,
     /// A popup dialog is displayed.
     Dialog,
+    /// `A` rename — keys go to the rename buffer.
+    Rename,
 }
 
 // ─── Popup types ────────────────────────────────────────────────────────────
@@ -86,7 +90,7 @@ pub enum AppAction {
 // ─── App state ──────────────────────────────────────────────────────────────
 
 pub struct App {
-    /// All known devices, sorted by `DeviceInfo::sort_key()`.
+    /// All known devices, sorted by current sort mode.
     pub devices: Vec<DeviceInfo>,
     /// Index of the selected device in the (possibly filtered) list.
     pub selected_index: usize,
@@ -98,6 +102,8 @@ pub struct App {
     pub input_mode: InputMode,
     /// Active search query (when in Search mode).
     pub search_query: String,
+    /// Regex error message to display inline (empty = no error).
+    pub search_error: String,
     /// Active popup overlay.
     pub active_popup: Option<Popup>,
     /// Monotonic tick counter for animations.
@@ -106,13 +112,23 @@ pub struct App {
     pub popup_ttl: Option<u64>,
     /// Whether the application should keep running.
     pub running: bool,
-    /// Sender handle to the BT worker (kept for future use in async actions).
-    #[allow(dead_code)]
-    pub bt_cmd_tx: mpsc::Sender<BtCommand>,
+    /// Whether the UI needs a redraw (dirty-flag optimisation).
+    pub dirty: bool,
+    /// Active sort mode — cyclable at runtime.
+    pub sort_mode: SortMode,
+    /// Rename buffer (when in Rename mode).
+    pub rename_buffer: String,
+    /// Address of the device being renamed.
+    pub rename_target: Option<Address>,
+    /// Sender handle to the BT worker (retained for future use).
+    pub _bt_cmd_tx: mpsc::Sender<BtCommand>,
+    /// Cached filtered device count — updated every tick to avoid repeated alloc.
+    cached_filter_count: usize,
 }
 
 impl App {
     pub fn new(bt_cmd_tx: mpsc::Sender<BtCommand>) -> Self {
+        let sort_mode = crate::config::get().general.sort_mode;
         Self {
             devices: Vec::new(),
             selected_index: 0,
@@ -120,11 +136,17 @@ impl App {
             scanning: false,
             input_mode: InputMode::Normal,
             search_query: String::new(),
+            search_error: String::new(),
             active_popup: None,
             tick_count: 0,
             popup_ttl: None,
             running: true,
-            bt_cmd_tx,
+            dirty: true,
+            sort_mode,
+            rename_buffer: String::new(),
+            rename_target: None,
+            _bt_cmd_tx: bt_cmd_tx,
+            cached_filter_count: 0,
         }
     }
 
@@ -133,24 +155,76 @@ impl App {
     /// Return the device list filtered by the current search query
     /// and the `hide_unnamed_devices` config setting.
     pub fn filtered_devices(&self) -> Vec<&DeviceInfo> {
-        let hide_unnamed = crate::config::get().general.hide_unnamed_devices;
+        let cfg = crate::config::get();
+        let hide_unnamed = cfg.general.hide_unnamed_devices;
+        let search_mode = cfg.general.search_mode;
+
+        // Compile regex once per call if needed.
+        let compiled_regex = self.compile_search_regex(search_mode);
 
         self.devices
             .iter()
             .filter(|d| {
-                // Optionally hide unnamed (address-only) devices.
                 if hide_unnamed && d.name.is_none() {
                     return false;
                 }
-                // Apply search filter.
                 if self.search_query.is_empty() {
                     return true;
                 }
-                let query = self.search_query.to_lowercase();
-                d.display_name().to_lowercase().contains(&query)
-                    || d.address.to_string().to_lowercase().contains(&query)
+                match &compiled_regex {
+                    Some(re) => {
+                        re.is_match(d.display_name()) || re.is_match(&d.address.to_string())
+                    }
+                    None => {
+                        // Plain substring match.
+                        let query = self.search_query.to_lowercase();
+                        d.display_name().to_lowercase().contains(&query)
+                            || d.address.to_string().to_lowercase().contains(&query)
+                    }
+                }
             })
             .collect()
+    }
+
+    /// Compile the search query as a regex if the search mode requires it.
+    /// Returns `None` for plain substring mode, or if the regex is invalid.
+    fn compile_search_regex(&self, mode: SearchMode) -> Option<Regex> {
+        if self.search_query.is_empty() {
+            return None;
+        }
+        let use_regex = match mode {
+            SearchMode::Regex => true,
+            SearchMode::Smart => self.search_query.starts_with('/'),
+            SearchMode::Plain => false,
+        };
+        if !use_regex {
+            return None;
+        }
+        let pattern = if mode == SearchMode::Smart {
+            // Strip the leading `/` for smart mode.
+            &self.search_query[1..]
+        } else {
+            &self.search_query
+        };
+        if pattern.is_empty() {
+            return None;
+        }
+        // Case-insensitive by default.
+        Regex::new(&format!("(?i){pattern}")).ok()
+    }
+
+    /// Lightweight count without allocating a filtered Vec.
+    pub fn filtered_count(&self) -> usize {
+        self.cached_filter_count
+    }
+
+    /// Push an error popup onto the stack.
+    pub fn push_error(&mut self, message: String) {
+        self.active_popup = Some(Popup::Error {
+            message,
+            slide: 0.0,
+        });
+        self.dirty = true;
     }
 
     /// The currently selected device (if any).
@@ -175,12 +249,16 @@ impl App {
     pub fn on_tick(&mut self) {
         self.tick_count = self.tick_count.wrapping_add(1);
 
+        // Update cached filter count (cheap: reuses existing filter logic).
+        self.cached_filter_count = self.filtered_devices().len();
+
         // Animate popup slide-in.
         if let Some(popup) = &mut self.active_popup {
             if let Some(slide) = popup.slide_mut() {
                 if *slide < 1.0 {
                     let speed = crate::config::get().notifications.slide_speed;
                     *slide = (*slide + speed).min(1.0);
+                    self.dirty = true;
                 }
             }
         }
@@ -193,9 +271,15 @@ impl App {
                 if self.input_mode == InputMode::Dialog {
                     self.input_mode = InputMode::Normal;
                 }
+                self.dirty = true;
             } else {
                 *ttl -= 1;
             }
+        }
+
+        // Scanning spinner needs continuous redraws.
+        if self.scanning {
+            self.dirty = true;
         }
     }
 
@@ -203,13 +287,13 @@ impl App {
 
     /// Apply a Bluetooth event from the worker to the app state.
     pub fn handle_bt_event(&mut self, event: BtEvent) {
+        self.dirty = true;
         match event {
             BtEvent::AdapterState(info) => {
                 self.adapter = info;
             }
 
             BtEvent::DeviceFound(info) => {
-                // Insert or update.
                 if let Some(existing) = self.devices.iter_mut().find(|d| d.address == info.address)
                 {
                     *existing = info;
@@ -281,7 +365,6 @@ impl App {
                     slide: 0.0,
                 });
                 self.input_mode = InputMode::Dialog;
-                // PIN dialogs stay until dismissed.
                 self.popup_ttl = None;
             }
 
@@ -316,19 +399,39 @@ impl App {
         self.popup_ttl = Some(duration_ms / tick_ms);
     }
 
-    /// Re-sort devices by sort key (connected first, then RSSI descending).
+    /// Re-sort devices by the active sort mode.
     fn sort_devices(&mut self) {
-        self.devices.sort_by_key(|a| a.sort_key());
+        match self.sort_mode {
+            SortMode::Default => self.devices.sort_by_key(|d| d.sort_key()),
+            SortMode::Name => self.devices.sort_by(|a, b| {
+                a.display_name()
+                    .to_lowercase()
+                    .cmp(&b.display_name().to_lowercase())
+            }),
+            SortMode::Rssi => {
+                // Strongest signal (closest to 0) first.
+                self.devices.sort_by(|a, b| {
+                    let ra = a.rssi.unwrap_or(i16::MIN);
+                    let rb = b.rssi.unwrap_or(i16::MIN);
+                    rb.cmp(&ra)
+                });
+            }
+            SortMode::Address => {
+                self.devices.sort_by(|a, b| a.address.cmp(&b.address));
+            }
+        }
     }
 
     // ── Input handling ──────────────────────────────────────────────────
 
     /// Process a key event and return an action for the main loop.
     pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
+        self.dirty = true;
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key),
             InputMode::Search => self.handle_search_key(key),
             InputMode::Dialog => self.handle_dialog_key(key),
+            InputMode::Rename => self.handle_rename_key(key),
         }
     }
 
@@ -374,6 +477,7 @@ impl App {
             c if c == kb.search => {
                 self.input_mode = InputMode::Search;
                 self.search_query.clear();
+                self.search_error.clear();
                 AppAction::Consumed
             }
 
@@ -382,6 +486,26 @@ impl App {
                 self.active_popup = Some(Popup::Help);
                 self.input_mode = InputMode::Dialog;
                 self.popup_ttl = None;
+                AppAction::Consumed
+            }
+
+            // ── Sort mode cycle ─────────────────────────────────────────
+            c if c == kb.cycle_sort => {
+                self.sort_mode = self.sort_mode.next();
+                self.sort_devices();
+                self.clamp_selection();
+                AppAction::Consumed
+            }
+
+            // ── Rename device ───────────────────────────────────────────
+            c if c == kb.rename => {
+                if let Some(device) = self.selected_device() {
+                    let addr = device.address;
+                    let alias = device.alias.clone();
+                    self.rename_target = Some(addr);
+                    self.rename_buffer = alias;
+                    self.input_mode = InputMode::Rename;
+                }
                 AppAction::Consumed
             }
 
@@ -455,7 +579,10 @@ impl App {
                 }
             }
 
-            _ => AppAction::Consumed,
+            _ => {
+                self.dirty = false; // Unknown key — no visual change.
+                AppAction::Consumed
+            }
         }
     }
 
@@ -464,6 +591,7 @@ impl App {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
                 self.search_query.clear();
+                self.search_error.clear();
                 self.clamp_selection();
                 AppAction::Consumed
             }
@@ -474,11 +602,13 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.search_query.pop();
+                self.validate_search_regex();
                 self.selected_index = 0;
                 AppAction::Consumed
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
+                self.validate_search_regex();
                 self.selected_index = 0;
                 AppAction::Consumed
             }
@@ -495,6 +625,68 @@ impl App {
                 AppAction::Consumed
             }
             _ => AppAction::Consumed,
+        }
+    }
+
+    fn handle_rename_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.rename_buffer.clear();
+                self.rename_target = None;
+                AppAction::Consumed
+            }
+            KeyCode::Enter => {
+                let action = if let Some(addr) = self.rename_target.take() {
+                    if !self.rename_buffer.trim().is_empty() {
+                        let new_alias = self.rename_buffer.trim().to_string();
+                        AppAction::BtCommand(BtCommand::SetAlias(addr, new_alias))
+                    } else {
+                        AppAction::Consumed
+                    }
+                } else {
+                    AppAction::Consumed
+                };
+                self.input_mode = InputMode::Normal;
+                self.rename_buffer.clear();
+                action
+            }
+            KeyCode::Backspace => {
+                self.rename_buffer.pop();
+                AppAction::Consumed
+            }
+            KeyCode::Char(c) => {
+                self.rename_buffer.push(c);
+                AppAction::Consumed
+            }
+            _ => AppAction::Consumed,
+        }
+    }
+
+    /// Validate the current search query as regex and store any error.
+    fn validate_search_regex(&mut self) {
+        let mode = crate::config::get().general.search_mode;
+        let use_regex = match mode {
+            SearchMode::Regex => true,
+            SearchMode::Smart => self.search_query.starts_with('/'),
+            SearchMode::Plain => false,
+        };
+        if !use_regex || self.search_query.is_empty() {
+            self.search_error.clear();
+            return;
+        }
+        let pattern = if mode == SearchMode::Smart {
+            &self.search_query[1..]
+        } else {
+            &self.search_query
+        };
+        if pattern.is_empty() {
+            self.search_error.clear();
+            return;
+        }
+        match Regex::new(&format!("(?i){pattern}")) {
+            Ok(_) => self.search_error.clear(),
+            Err(e) => self.search_error = format!("regex: {e}"),
         }
     }
 }

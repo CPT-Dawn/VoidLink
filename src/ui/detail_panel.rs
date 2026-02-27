@@ -16,7 +16,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(theme::border_inactive());
 
     let Some(device) = app.selected_device() else {
-        // No device selected — show placeholder.
         let placeholder = Paragraph::new(Line::from(vec![Span::styled(
             "  Select a device to view details",
             theme::dim(),
@@ -29,26 +28,37 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split inner area into lines.
+    // Split inner area into named rows.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // name
-            Constraint::Length(1), // address
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // status badges
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // RSSI label
-            Constraint::Length(1), // RSSI gauge
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // battery label
-            Constraint::Length(1), // battery gauge
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // device class
-            Constraint::Length(1), // icon type
-            Constraint::Min(0),   // rest
+            Constraint::Length(1), // 0: name
+            Constraint::Length(1), // 1: address
+            Constraint::Length(1), // 2: spacer
+            Constraint::Length(1), // 3: status badges
+            Constraint::Length(1), // 4: spacer
+            Constraint::Length(1), // 5: RSSI label
+            Constraint::Length(1), // 6: RSSI gauge
+            Constraint::Length(1), // 7: spacer
+            Constraint::Length(1), // 8: battery label
+            Constraint::Length(1), // 9: battery gauge
+            Constraint::Length(1), // 10: spacer
+            Constraint::Length(1), // 11: device class
+            Constraint::Length(1), // 12: icon type
+            Constraint::Min(0),   // 13: rest
         ])
         .split(inner);
+
+    // Safe: we have exactly 14 constraints, so 14 rects.
+    // Use .get() for every access — silently skip if terminal is too small.
+    macro_rules! row {
+        ($idx:expr) => {
+            match chunks.get($idx) {
+                Some(&r) => r,
+                None => return,
+            }
+        };
+    }
 
     // ── Name ────────────────────────────────────────────────────────────
     let icon = theme::device_icon(device.icon.as_deref(), device.class);
@@ -56,14 +66,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!("  {icon} "), theme::title()),
         Span::styled(device.display_name(), theme::title()),
     ]);
-    frame.render_widget(Paragraph::new(name_line), chunks[0]);
+    frame.render_widget(Paragraph::new(name_line), row!(0));
 
     // ── Address ─────────────────────────────────────────────────────────
     let addr_line = Line::from(vec![
         Span::styled("  Address: ", theme::dim()),
         Span::styled(device.address.to_string(), theme::list_item()),
     ]);
-    frame.render_widget(Paragraph::new(addr_line), chunks[1]);
+    frame.render_widget(Paragraph::new(addr_line), row!(1));
 
     // ── Status badges ───────────────────────────────────────────────────
     let mut badge_spans = vec![Span::styled("  Status:  ", theme::dim())];
@@ -82,7 +92,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         badge_spans.push(Span::styled("  Not Trusted", theme::dim()));
     }
-    frame.render_widget(Paragraph::new(Line::from(badge_spans)), chunks[3]);
+    frame.render_widget(Paragraph::new(Line::from(badge_spans)), row!(3));
 
     // ── RSSI ────────────────────────────────────────────────────────────
     let (rssi_icon, rssi_color) = theme::rssi_display(device.rssi);
@@ -91,7 +101,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         None => format!("  {rssi_icon} Signal: N/A"),
     };
     let rssi_line = Line::from(Span::styled(rssi_text, Style::default().fg(rssi_color)));
-    frame.render_widget(Paragraph::new(rssi_line), chunks[5]);
+    frame.render_widget(Paragraph::new(rssi_line), row!(5));
 
     // RSSI gauge (map -100..0 dBm to 0..100%).
     if let Some(rssi) = device.rssi {
@@ -100,7 +110,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .gauge_style(Style::default().fg(rssi_color))
             .percent(pct)
             .label(format!("{pct}%"));
-        frame.render_widget(gauge, chunks[6]);
+        frame.render_widget(gauge, row!(6));
     }
 
     // ── Battery ─────────────────────────────────────────────────────────
@@ -110,14 +120,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         None => format!("  {bat_icon} Battery: N/A"),
     };
     let bat_line = Line::from(Span::styled(bat_text, Style::default().fg(bat_color)));
-    frame.render_widget(Paragraph::new(bat_line), chunks[8]);
+    frame.render_widget(Paragraph::new(bat_line), row!(8));
 
     if let Some(pct) = device.battery {
         let gauge = Gauge::default()
             .gauge_style(Style::default().fg(bat_color))
             .percent(pct as u16)
             .label(format!("{pct}%"));
-        frame.render_widget(gauge, chunks[9]);
+        frame.render_widget(gauge, row!(9));
     }
 
     // ── Device class / icon type ────────────────────────────────────────
@@ -126,7 +136,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Class:   ", theme::dim()),
             Span::styled(format!("0x{class:06X}"), theme::list_item()),
         ]);
-        frame.render_widget(Paragraph::new(class_line), chunks[11]);
+        frame.render_widget(Paragraph::new(class_line), row!(11));
     }
 
     if let Some(ref icon_name) = device.icon {
@@ -134,6 +144,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Type:    ", theme::dim()),
             Span::styled(icon_name.as_str(), theme::list_item()),
         ]);
-        frame.render_widget(Paragraph::new(icon_line), chunks[12]);
+        frame.render_widget(Paragraph::new(icon_line), row!(12));
     }
 }

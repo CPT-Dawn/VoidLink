@@ -39,8 +39,12 @@ pub fn init() -> Result<()> {
 }
 
 /// Return a static reference to the loaded configuration.
+///
 /// # Panics
-/// Panics if `init()` has not been called yet.
+/// Panics only if `init()` was never called — a programmer error that cannot
+/// occur during normal operation since `main()` calls `init()` before any
+/// other module.
+#[inline]
 pub fn get() -> &'static Config {
     CONFIG.get().expect("config::init() was not called")
 }
@@ -48,18 +52,14 @@ pub fn get() -> &'static Config {
 // ─── Loading logic ──────────────────────────────────────────────────────────
 
 fn load() -> Result<Config> {
-    // 1. Parse compiled-in defaults — the infallible baseline.
     let defaults: RawConfig = toml::from_str(DEFAULT_CONFIG_STR)
         .wrap_err("BUG: failed to parse embedded default_config.toml")?;
 
-    // 2. Resolve user config path.
     let user_path = config_path();
     info!("Config path: {}", user_path.display());
 
-    // 3. Bootstrap on first run.
     ensure_config_file(&user_path)?;
 
-    // 4. Parse user file; fall back to embedded defaults on *any* error.
     let raw = match fs::read_to_string(&user_path) {
         Ok(contents) => match toml::from_str::<RawConfig>(&contents) {
             Ok(parsed) => {
@@ -86,17 +86,12 @@ fn load() -> Result<Config> {
     Ok(Config::from(raw))
 }
 
-/// Resolve the XDG-compliant config file path.
 fn config_path() -> PathBuf {
     directories::ProjectDirs::from("", "", "voidlink")
         .map(|dirs| dirs.config_dir().join("config.toml"))
-        .unwrap_or_else(|| {
-            // Fallback when $HOME is somehow unset (extremely rare).
-            PathBuf::from(".config/voidlink/config.toml")
-        })
+        .unwrap_or_else(|| PathBuf::from(".config/voidlink/config.toml"))
 }
 
-/// Create the config directory tree and write the default file if absent.
 fn ensure_config_file(path: &PathBuf) -> Result<()> {
     if path.exists() {
         return Ok(());
@@ -114,9 +109,12 @@ fn ensure_config_file(path: &PathBuf) -> Result<()> {
 // ─── Hex colour helper ─────────────────────────────────────────────────────
 
 /// Parse a `#RRGGBB` hex string into an RGB `Color`.
+///
+/// Operates on ASCII bytes to avoid multi-byte UTF-8 slice panics.
 fn parse_hex_color(s: &str) -> Option<Color> {
     let hex = s.strip_prefix('#').unwrap_or(s);
-    if hex.len() != 6 {
+    let bytes = hex.as_bytes();
+    if bytes.len() != 6 || !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -125,7 +123,6 @@ fn parse_hex_color(s: &str) -> Option<Color> {
     Some(Color::Rgb(r, g, b))
 }
 
-/// Newtype that serialises as `"#RRGGBB"` and deserialises from the same.
 #[derive(Debug, Clone, Copy)]
 pub struct HexColor(pub Color);
 
@@ -151,12 +148,50 @@ impl<'de> Deserialize<'de> for HexColor {
     }
 }
 
-// ─── Raw TOML structures (serde targets) ────────────────────────────────────
-//
-// Each struct carries `#[serde(default)]` so that missing keys or entire
-// sections gracefully fill in from the compiled defaults.
+// ─── Public enums ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Device sort order — runtime-cyclable via keybinding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    #[default]
+    Default,
+    Name,
+    Rssi,
+    Address,
+}
+
+impl SortMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Name,
+            Self::Name => Self::Rssi,
+            Self::Rssi => Self::Address,
+            Self::Address => Self::Default,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Name => "Name",
+            Self::Rssi => "RSSI",
+            Self::Address => "Address",
+        }
+    }
+}
+
+/// Search matching mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchMode {
+    #[default]
+    Smart,
+    Plain,
+    Regex,
+}
+
+// ─── Raw TOML structures (serde targets) ────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct RawConfig {
     general: RawGeneral,
@@ -166,20 +201,6 @@ struct RawConfig {
     keybindings: RawKeybindings,
 }
 
-impl Default for RawConfig {
-    fn default() -> Self {
-        Self {
-            general: RawGeneral::default(),
-            bluetooth: RawBluetooth::default(),
-            notifications: RawNotifications::default(),
-            theme: RawTheme::default(),
-            keybindings: RawKeybindings::default(),
-        }
-    }
-}
-
-// ── General ─────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct RawGeneral {
@@ -187,6 +208,8 @@ struct RawGeneral {
     scan_on_startup: bool,
     hide_unnamed_devices: bool,
     device_list_percent: u16,
+    sort_mode: String,
+    search_mode: String,
 }
 
 impl Default for RawGeneral {
@@ -196,11 +219,11 @@ impl Default for RawGeneral {
             scan_on_startup: false,
             hide_unnamed_devices: false,
             device_list_percent: 55,
+            sort_mode: "default".into(),
+            search_mode: "smart".into(),
         }
     }
 }
-
-// ── Bluetooth ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -217,8 +240,6 @@ impl Default for RawBluetooth {
         }
     }
 }
-
-// ── Notifications ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -237,8 +258,6 @@ impl Default for RawNotifications {
         }
     }
 }
-
-// ── Theme ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -262,21 +281,20 @@ struct RawPalette {
 
 impl Default for RawPalette {
     fn default() -> Self {
+        // Cosmic Dawn — high-contrast palette for translucent terminals.
         Self {
-            accent_primary: HexColor(Color::Rgb(120, 220, 255)),
-            accent_secondary: HexColor(Color::Rgb(180, 160, 255)),
-            accent_error: HexColor(Color::Rgb(255, 140, 160)),
-            text_primary: HexColor(Color::Rgb(225, 223, 240)),
-            text_dim: HexColor(Color::Rgb(120, 124, 150)),
-            paired: HexColor(Color::Rgb(255, 200, 120)),
-            success: HexColor(Color::Rgb(130, 235, 175)),
-            scanning: HexColor(Color::Rgb(100, 230, 255)),
-            border_inactive: HexColor(Color::Rgb(140, 143, 165)),
+            accent_primary: HexColor(Color::Rgb(0x00, 0xE5, 0xFF)),
+            accent_secondary: HexColor(Color::Rgb(0xBB, 0x86, 0xFC)),
+            accent_error: HexColor(Color::Rgb(0xFF, 0x45, 0x45)),
+            text_primary: HexColor(Color::Rgb(0xE8, 0xE6, 0xF0)),
+            text_dim: HexColor(Color::Rgb(0x6B, 0x6F, 0x85)),
+            paired: HexColor(Color::Rgb(0xFF, 0xB7, 0x4D)),
+            success: HexColor(Color::Rgb(0x69, 0xF0, 0xAE)),
+            scanning: HexColor(Color::Rgb(0x18, 0xFF, 0xFF)),
+            border_inactive: HexColor(Color::Rgb(0x4A, 0x4E, 0x69)),
         }
     }
 }
-
-// ── Keybindings ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -296,6 +314,8 @@ struct RawKeybindings {
     trust: String,
     remove: String,
     refresh: String,
+    cycle_sort: String,
+    rename: String,
 }
 
 impl Default for RawKeybindings {
@@ -316,16 +336,14 @@ impl Default for RawKeybindings {
             trust: "t".into(),
             remove: "r".into(),
             refresh: "R".into(),
+            cycle_sort: "S".into(),
+            rename: "A".into(),
         }
     }
 }
 
 // ─── Resolved runtime config ────────────────────────────────────────────────
-//
-// These are the structs the rest of the app interacts with.  All values are
-// validated, clamped, and ready to use — no further parsing at render time.
 
-/// Fully resolved, runtime-ready configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -341,6 +359,8 @@ pub struct GeneralConfig {
     pub scan_on_startup: bool,
     pub hide_unnamed_devices: bool,
     pub device_list_percent: u16,
+    pub sort_mode: SortMode,
+    pub search_mode: SearchMode,
 }
 
 #[derive(Debug, Clone)]
@@ -361,7 +381,6 @@ pub struct ThemeConfig {
     pub palette: Palette,
 }
 
-/// Resolved colour palette — every field is a ready-to-use `Color`.
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub accent_primary: Color,
@@ -375,7 +394,6 @@ pub struct Palette {
     pub border_inactive: Color,
 }
 
-/// Pre-parsed keybindings — each field is a `KeyCode` ready for matching.
 #[derive(Debug, Clone)]
 pub struct KeybindingsConfig {
     pub quit: KeyCode,
@@ -393,6 +411,8 @@ pub struct KeybindingsConfig {
     pub trust: KeyCode,
     pub remove: KeyCode,
     pub refresh: KeyCode,
+    pub cycle_sort: KeyCode,
+    pub rename: KeyCode,
 }
 
 // ─── Raw → Resolved conversion ─────────────────────────────────────────────
@@ -405,6 +425,17 @@ impl From<RawConfig> for Config {
                 scan_on_startup: raw.general.scan_on_startup,
                 hide_unnamed_devices: raw.general.hide_unnamed_devices,
                 device_list_percent: raw.general.device_list_percent.clamp(20, 80),
+                sort_mode: match raw.general.sort_mode.as_str() {
+                    "name" => SortMode::Name,
+                    "rssi" => SortMode::Rssi,
+                    "address" => SortMode::Address,
+                    _ => SortMode::Default,
+                },
+                search_mode: match raw.general.search_mode.as_str() {
+                    "plain" => SearchMode::Plain,
+                    "regex" => SearchMode::Regex,
+                    _ => SearchMode::Smart,
+                },
             },
             bluetooth: BluetoothConfig {
                 auto_trust_on_pair: raw.bluetooth.auto_trust_on_pair,
@@ -444,12 +475,13 @@ impl From<RawConfig> for Config {
                 trust: parse_key(&raw.keybindings.trust),
                 remove: parse_key(&raw.keybindings.remove),
                 refresh: parse_key(&raw.keybindings.refresh),
+                cycle_sort: parse_key(&raw.keybindings.cycle_sort),
+                rename: parse_key(&raw.keybindings.rename),
             },
         }
     }
 }
 
-/// Parse a human-readable key name into a crossterm `KeyCode`.
 fn parse_key(s: &str) -> KeyCode {
     match s {
         "Enter" => KeyCode::Enter,
@@ -467,7 +499,10 @@ fn parse_key(s: &str) -> KeyCode {
         "PageDown" => KeyCode::PageDown,
         "Delete" => KeyCode::Delete,
         "Insert" => KeyCode::Insert,
-        s if s.len() == 1 => KeyCode::Char(s.chars().next().unwrap()),
+        s if s.len() == 1 => {
+            // Safe: single-byte UTF-8 strings always yield one char.
+            s.chars().next().map_or(KeyCode::Null, KeyCode::Char)
+        }
         other => {
             warn!("Unknown keybinding \"{other}\" in config — ignoring");
             KeyCode::Null

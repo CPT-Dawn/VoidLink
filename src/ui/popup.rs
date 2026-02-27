@@ -156,9 +156,10 @@ fn wrapped_line_count(message: &str, content_width: u16) -> u16 {
 }
 
 /// Apply a slide-from-top animation to a rect. `progress` is 0.0 → 1.0.
+/// Uses ease-out-cubic for a snappy, decelerating entrance.
 fn slide_from_top(target: Rect, progress: f32) -> Rect {
-    let progress = progress.clamp(0.0, 1.0);
-    let offset = ((1.0 - progress) * target.y as f32) as u16;
+    let eased = theme::ease_out_cubic(progress.clamp(0.0, 1.0));
+    let offset = ((1.0 - eased) * target.y as f32) as u16;
     Rect {
         x: target.x,
         y: target.y.saturating_sub(offset),

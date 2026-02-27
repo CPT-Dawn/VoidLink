@@ -17,7 +17,7 @@ mod ui;
 
 use color_eyre::Result;
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use app::{App, AppAction};
@@ -45,8 +45,8 @@ async fn main() -> Result<()> {
     let (bt_cmd_tx, bt_cmd_rx) = mpsc::channel::<BtCommand>(32);
     let (bt_evt_tx, bt_evt_rx) = mpsc::channel(64);
 
-    // ── Spawn Bluetooth worker ──────────────────────────────────────────
-    tokio::spawn(async move {
+    // ── Spawn Bluetooth worker (keep JoinHandle for crash detection) ────
+    let worker_handle = tokio::spawn(async move {
         bluetooth::worker::run(bt_cmd_rx, bt_evt_tx).await;
     });
 
@@ -64,8 +64,17 @@ async fn main() -> Result<()> {
 
     // ── Main event loop ─────────────────────────────────────────────────
     while app.running {
-        // Render.
-        terminal.draw(|frame| ui::render(frame, &app))?;
+        // Only redraw when the UI state has actually changed.
+        if app.dirty {
+            terminal.draw(|frame| ui::render(frame, &app))?;
+            app.dirty = false;
+        }
+
+        // Detect worker crash.
+        if worker_handle.is_finished() {
+            warn!("Bluetooth worker exited unexpectedly");
+            app.push_error("Bluetooth worker crashed — restart VoidLink".into());
+        }
 
         // Await next event (key / tick / BT).
         match events.next().await? {
@@ -89,7 +98,8 @@ async fn main() -> Result<()> {
                 app.handle_bt_event(bt_event);
             }
             Event::Resize(_, _) => {
-                // ratatui handles resize automatically on next draw.
+                // Mark dirty so the next iteration redraws.
+                app.dirty = true;
             }
         }
     }

@@ -359,6 +359,27 @@ async fn handle_command(
                 }
             }
         }
+
+        BtCommand::SetAlias(addr, new_alias) => {
+            let addr = *addr;
+            match adapter.device(addr) {
+                Ok(device) => {
+                    if let Err(e) = device.set_alias(new_alias.clone()).await {
+                        let _ = evt_tx
+                            .send(BtEvent::Error(format!("Failed to set alias: {e}")))
+                            .await;
+                    }
+                    // Re-snapshot to reflect the change.
+                    let info = snapshot_device(&device).await;
+                    let _ = evt_tx.send(BtEvent::DeviceUpdated(info)).await;
+                }
+                Err(e) => {
+                    let _ = evt_tx
+                        .send(BtEvent::Error(format!("Device not found: {e}")))
+                        .await;
+                }
+            }
+        }
     }
 }
 
