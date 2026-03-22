@@ -32,24 +32,21 @@ This architecture keeps the binary small, avoids polling loops, and preserves st
 
 ## Installation
 
+### Arch Linux (AUR)
+
+```bash
+paru -S voidlink
+# Or
+yay -S voidlink
+```
+
 ### Build from Source
 
 ```bash
 git clone https://github.com/cptdawn/VoidLink.git
 cd VoidLink
 cargo build --release
-```
-
-Run the binary:
-
-```bash
-./target/release/voidlink
-```
-
-### Arch Linux (AUR)
-
-```bash
-yay -S <project-name>
+sudo cp target/release/voidlink /usr/bin/
 ```
 
 ## Configuration
