@@ -5,10 +5,21 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use regex::Regex;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::bluetooth::types::*;
 use crate::config::{SearchMode, SortMode};
+
+// ─── Pending Operations ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingOperation {
+    Connecting,
+    Disconnecting,
+    Pairing,
+    Removing,
+}
 
 // ─── Input modes ────────────────────────────────────────────────────────────
 
@@ -120,6 +131,8 @@ pub struct App {
     pub rename_buffer: String,
     /// Address of the device being renamed.
     pub rename_target: Option<Address>,
+    /// Track ongoing operations per device for loading animations.
+    pub pending_ops: HashMap<Address, PendingOperation>,
     /// Sender handle to the BT worker (retained for future use).
     pub _bt_cmd_tx: mpsc::Sender<BtCommand>,
     /// Cached filtered device count — updated every tick to avoid repeated alloc.
@@ -145,6 +158,7 @@ impl App {
             sort_mode,
             rename_buffer: String::new(),
             rename_target: None,
+            pending_ops: HashMap::new(),
             _bt_cmd_tx: bt_cmd_tx,
             cached_filter_count: 0,
         }
@@ -278,7 +292,7 @@ impl App {
         }
 
         // Scanning spinner needs continuous redraws.
-        if self.scanning {
+        if self.scanning || !self.pending_ops.is_empty() {
             self.dirty = true;
         }
     }
@@ -305,6 +319,12 @@ impl App {
             }
 
             BtEvent::DeviceUpdated(info) => {
+                if !info.connected {
+                    if self.pending_ops.get(&info.address) == Some(&PendingOperation::Disconnecting)
+                    {
+                        self.pending_ops.remove(&info.address);
+                    }
+                }
                 if let Some(existing) = self.devices.iter_mut().find(|d| d.address == info.address)
                 {
                     *existing = info;
@@ -316,6 +336,7 @@ impl App {
             }
 
             BtEvent::DeviceRemoved(addr) => {
+                self.pending_ops.remove(&addr);
                 self.devices.retain(|d| d.address != addr);
                 self.clamp_selection();
             }
@@ -325,6 +346,7 @@ impl App {
                 success,
                 error,
             } => {
+                self.pending_ops.remove(&address);
                 let message = if success {
                     format!("Connected to {address}")
                 } else {
@@ -342,10 +364,11 @@ impl App {
             }
 
             BtEvent::PairResult {
-                address: _,
+                address,
                 success,
                 error,
             } => {
+                self.pending_ops.remove(&address);
                 if !success {
                     let message = format!(
                         "Pairing failed: {}",
@@ -530,8 +553,11 @@ impl App {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
                     if device.connected {
+                        self.pending_ops
+                            .insert(addr, PendingOperation::Disconnecting);
                         AppAction::BtCommand(BtCommand::Disconnect(addr))
                     } else {
+                        self.pending_ops.insert(addr, PendingOperation::Connecting);
                         AppAction::BtCommand(BtCommand::Connect(addr))
                     }
                 } else {
@@ -541,6 +567,8 @@ impl App {
             c if c == kb.disconnect => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
+                    self.pending_ops
+                        .insert(addr, PendingOperation::Disconnecting);
                     AppAction::BtCommand(BtCommand::Disconnect(addr))
                 } else {
                     AppAction::Consumed
@@ -549,6 +577,7 @@ impl App {
             c if c == kb.pair => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
+                    self.pending_ops.insert(addr, PendingOperation::Pairing);
                     AppAction::BtCommand(BtCommand::Pair(addr))
                 } else {
                     AppAction::Consumed
@@ -565,6 +594,7 @@ impl App {
             c if c == kb.remove => {
                 if let Some(device) = self.selected_device() {
                     let addr = device.address;
+                    self.pending_ops.insert(addr, PendingOperation::Removing);
                     AppAction::BtCommand(BtCommand::RemoveDevice(addr))
                 } else {
                     AppAction::Consumed

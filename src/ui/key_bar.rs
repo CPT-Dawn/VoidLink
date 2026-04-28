@@ -26,136 +26,126 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-/// Key style: accented, bold.
+/// Key style: accented, bold, slightly reversed for a modern "badge" look.
 fn key(s: &str) -> Span<'_> {
     Span::styled(
-        s,
+        format!(" {s} "),
         Style::default()
-            .fg(theme::cyan())
+            .fg(theme::text_primary())
+            .bg(theme::deep_purple())
             .add_modifier(Modifier::BOLD),
     )
 }
 
 /// Description style: dimmed.
 fn desc(s: &str) -> Span<'_> {
-    Span::styled(s, Style::default().fg(theme::text_dim()))
+    Span::styled(format!(" {s} "), Style::default().fg(theme::text_dim()))
 }
 
 /// Separator between groups.
 fn sep() -> Span<'static> {
-    Span::styled("  │  ", Style::default().fg(theme::deep_purple()))
+    Span::raw("   ")
 }
 
 fn normal_hints(app: &App) -> Vec<Span<'static>> {
     let mut hints: Vec<Span<'static>> = Vec::with_capacity(40);
 
-    hints.push(Span::raw(" "));
-
     // Navigation.
-    hints.push(key("j/k"));
-    hints.push(desc(" Navigate "));
-
+    hints.push(key("↑/↓"));
+    hints.push(desc("Navigate"));
     hints.push(sep());
 
     // Connect / disconnect (contextual).
     if let Some(device) = app.selected_device() {
         if device.connected {
             hints.push(key("⏎"));
-            hints.push(desc(" Disconnect "));
+            hints.push(desc("Disconnect"));
         } else {
             hints.push(key("⏎"));
-            hints.push(desc(" Connect "));
+            hints.push(desc("Connect"));
         }
     } else {
         hints.push(key("⏎"));
-        hints.push(desc(" Connect "));
+        hints.push(desc("Connect"));
     }
-
     hints.push(sep());
 
     hints.push(key("p"));
-    hints.push(desc(" Pair "));
+    hints.push(desc("Pair"));
+    hints.push(sep());
 
     hints.push(key("t"));
-    hints.push(desc(" Trust "));
+    hints.push(desc("Trust"));
+    hints.push(sep());
 
     hints.push(key("d"));
-    hints.push(desc(" Disconnect "));
+    hints.push(desc("Disconnect"));
+    hints.push(sep());
 
     hints.push(key("r"));
-    hints.push(desc(" Remove "));
+    hints.push(desc("Remove"));
+    hints.push(sep());
 
     hints.push(key("A"));
-    hints.push(desc(" Rename "));
-
+    hints.push(desc("Rename"));
     hints.push(sep());
 
     // Adapter.
     if app.adapter.powered {
         hints.push(key("a"));
-        hints.push(desc(" Power Off "));
+        hints.push(desc("Power Off"));
     } else {
         hints.push(key("a"));
-        hints.push(desc(" Power On "));
+        hints.push(desc("Power On"));
     }
+    hints.push(sep());
 
     if app.scanning {
         hints.push(key("s"));
-        hints.push(desc(" Stop Scan "));
+        hints.push(desc("Stop Scan"));
     } else {
         hints.push(key("s"));
-        hints.push(desc(" Scan "));
+        hints.push(desc("Scan"));
     }
-
-    hints.push(key("S"));
-    hints.push(desc(" Sort "));
-
     hints.push(sep());
 
     hints.push(key("/"));
-    hints.push(desc(" Search "));
+    hints.push(desc("Search"));
+    hints.push(sep());
 
     hints.push(key("?"));
-    hints.push(desc(" Help "));
+    hints.push(desc("Help"));
+    hints.push(sep());
 
     hints.push(key("q"));
-    hints.push(desc(" Quit "));
+    hints.push(desc("Quit"));
 
     hints
 }
 
 fn search_hints() -> Vec<Span<'static>> {
     vec![
-        Span::raw(" "),
         key("⏎"),
-        desc(" Confirm "),
+        desc("Confirm"),
         sep(),
         key("Esc"),
-        desc(" Cancel "),
+        desc("Cancel"),
         sep(),
         desc("Type to filter devices… (prefix / for regex)"),
     ]
 }
 
 fn dialog_hints() -> Vec<Span<'static>> {
-    vec![
-        Span::raw(" "),
-        key("Esc"),
-        desc(" Dismiss "),
-        sep(),
-        key("⏎"),
-        desc(" OK "),
-    ]
+    vec![key("Esc"), desc("Dismiss"), sep(), key("⏎"), desc("OK")]
 }
 
 fn rename_hints() -> Vec<Span<'static>> {
     vec![
-        Span::raw(" "),
         key("⏎"),
-        desc(" Confirm Rename "),
+        desc("Confirm Rename"),
         sep(),
         key("Esc"),
-        desc(" Cancel "),
+        desc("Cancel"),
         sep(),
         desc("Type new alias…"),
     ]

@@ -13,7 +13,7 @@ pub mod popup;
 pub mod spinner;
 pub mod status_bar;
 
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -24,18 +24,29 @@ pub fn render(frame: &mut Frame, app: &App) {
     let list_pct = config::get().general.device_list_percent;
     let detail_pct = 100u16.saturating_sub(list_pct);
 
+    let mut area = frame.area();
+
+    // Add outer margins for a floating, polished look if the terminal is large enough
+    if area.width > 20 && area.height > 10 {
+        area = area.inner(Margin {
+            vertical: 1,
+            horizontal: 2,
+        });
+    }
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // status bar
+            Constraint::Length(1), // Status bar is now 1 line tall
+            Constraint::Length(1), // spacer
             Constraint::Min(0),    // main content
+            Constraint::Length(1), // spacer
             Constraint::Length(1), // key hints bar
         ])
-        .split(frame.area());
+        .split(area);
 
-    // Destructure to avoid raw indexing panics.
-    let [status_area, content_area, keybar_area] =
-        match <[ratatui::layout::Rect; 3]>::try_from(outer.as_ref()) {
+    let [status_area, _, content_area, _, keybar_area] =
+        match <[ratatui::layout::Rect; 5]>::try_from(outer.as_ref()) {
             Ok(a) => a,
             Err(_) => return,
         };
@@ -48,11 +59,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(list_pct),   // device list
+            Constraint::Length(2),              // spacer between columns
             Constraint::Percentage(detail_pct), // detail panel
         ])
         .split(content_area);
 
-    let [list_area, detail_area] = match <[ratatui::layout::Rect; 2]>::try_from(main.as_ref()) {
+    let [list_area, _, detail_area] = match <[ratatui::layout::Rect; 3]>::try_from(main.as_ref()) {
         Ok(a) => a,
         Err(_) => return,
     };

@@ -3,16 +3,17 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, PendingOperation};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(Span::styled(" Details ", theme::title()))
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::border_inactive());
 
     let Some(device) = app.selected_device() else {
@@ -45,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1), // 10: spacer
             Constraint::Length(1), // 11: device class
             Constraint::Length(1), // 12: icon type
-            Constraint::Min(0),   // 13: rest
+            Constraint::Min(0),    // 13: rest
         ])
         .split(inner);
 
@@ -61,9 +62,32 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // ── Name ────────────────────────────────────────────────────────────
-    let icon = theme::device_icon(device.icon.as_deref(), device.class);
+    let pending_op = app.pending_ops.get(&device.address);
+    let icon_span = match pending_op {
+        Some(PendingOperation::Connecting) => Span::styled(
+            format!("  {} ", theme::spinner_frame(app.tick_count)),
+            theme::connecting_pulse(),
+        ),
+        Some(PendingOperation::Disconnecting) => Span::styled(
+            format!("  {} ", theme::spinner_frame(app.tick_count)),
+            theme::disconnecting_pulse(),
+        ),
+        Some(PendingOperation::Pairing) => Span::styled(
+            format!("  {} ", theme::spinner_frame(app.tick_count)),
+            theme::pairing_pulse(),
+        ),
+        Some(PendingOperation::Removing) => Span::styled(
+            format!("  {} ", theme::spinner_frame(app.tick_count)),
+            theme::removing_pulse(),
+        ),
+        None => {
+            let icon = theme::device_icon(device.icon.as_deref(), device.class);
+            Span::styled(format!("  {icon} "), theme::title())
+        }
+    };
+
     let name_line = Line::from(vec![
-        Span::styled(format!("  {icon} "), theme::title()),
+        icon_span,
         Span::styled(device.display_name(), theme::title()),
     ]);
     frame.render_widget(Paragraph::new(name_line), row!(0));
@@ -97,7 +121,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // ── RSSI ────────────────────────────────────────────────────────────
     let (rssi_icon, rssi_color) = theme::rssi_display(device.rssi);
     let rssi_text = match device.rssi {
-        Some(r) => format!("  {rssi_icon} Signal: {r} dBm  {}", theme::rssi_bar(device.rssi)),
+        Some(r) => format!(
+            "  {rssi_icon} Signal: {r} dBm  {}",
+            theme::rssi_bar(device.rssi)
+        ),
         None => format!("  {rssi_icon} Signal: N/A"),
     };
     let rssi_line = Line::from(Span::styled(rssi_text, Style::default().fg(rssi_color)));

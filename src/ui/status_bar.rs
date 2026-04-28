@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, InputMode};
@@ -12,8 +12,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let adapter = &app.adapter;
 
     let mut spans = vec![
-        Span::styled(" 󰂯 VoidLink ", theme::title()),
-        Span::styled("│ ", theme::dim()),
+        Span::styled(
+            " 󰂯 VoidLink ",
+            ratatui::style::Style::default()
+                .fg(theme::cyan())
+                .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED),
+        ),
+        Span::raw(" "),
     ];
 
     // Adapter name & address.
@@ -47,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     } else {
-        spans.push(Span::styled("  Idle ", theme::dim()));
+        spans.push(Span::styled("Idle ", theme::dim()));
     }
 
     // Sort mode indicator.
@@ -92,7 +97,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    // Device count (using cached value — no allocation).
+    // Device count
     let device_count = app.filtered_count();
     spans.push(Span::styled("│ ", theme::dim()));
     spans.push(Span::styled(
@@ -101,9 +106,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     ));
 
     let line = Line::from(spans);
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(theme::border_active());
+    // Removed bottom border for a cleaner top-bar look
+    let block = Block::default();
 
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, area);

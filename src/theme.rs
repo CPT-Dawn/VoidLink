@@ -235,3 +235,21 @@ pub fn sort_icon(mode: crate::config::SortMode) -> &'static str {
         crate::config::SortMode::Address => "󰩟",
     }
 }
+
+// ─── Pending Operation Pulse Styles ─────────────────────────────────────────
+
+pub fn connecting_pulse() -> Style {
+    Style::default().fg(cyan()).add_modifier(Modifier::BOLD)
+}
+
+pub fn disconnecting_pulse() -> Style {
+    Style::default().fg(dawn_red()).add_modifier(Modifier::BOLD)
+}
+
+pub fn pairing_pulse() -> Style {
+    Style::default().fg(amber()).add_modifier(Modifier::BOLD)
+}
+
+pub fn removing_pulse() -> Style {
+    Style::default().fg(text_dim()).add_modifier(Modifier::BOLD)
+}

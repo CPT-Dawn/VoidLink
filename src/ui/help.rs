@@ -103,5 +103,10 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let height = (area.height as u32 * percent_y.min(100) as u32 / 100) as u16;
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }

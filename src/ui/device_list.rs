@@ -3,10 +3,10 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, PendingOperation};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -15,7 +15,32 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = filtered
         .iter()
         .map(|device| {
-            let icon = theme::device_icon(device.icon.as_deref(), device.class);
+            // Check for pending operations
+            let pending_op = app.pending_ops.get(&device.address);
+
+            let icon_span = match pending_op {
+                Some(PendingOperation::Connecting) => Span::styled(
+                    format!(" {} ", theme::spinner_frame(app.tick_count)),
+                    theme::connecting_pulse(),
+                ),
+                Some(PendingOperation::Disconnecting) => Span::styled(
+                    format!(" {} ", theme::spinner_frame(app.tick_count)),
+                    theme::disconnecting_pulse(),
+                ),
+                Some(PendingOperation::Pairing) => Span::styled(
+                    format!(" {} ", theme::spinner_frame(app.tick_count)),
+                    theme::pairing_pulse(),
+                ),
+                Some(PendingOperation::Removing) => Span::styled(
+                    format!(" {} ", theme::spinner_frame(app.tick_count)),
+                    theme::removing_pulse(),
+                ),
+                None => {
+                    let icon = theme::device_icon(device.icon.as_deref(), device.class);
+                    Span::styled(format!(" {icon} "), theme::list_item())
+                }
+            };
+
             let (rssi_icon, rssi_color) = theme::rssi_display(device.rssi);
             let name = device.display_name();
 
@@ -50,20 +75,25 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                 None => Span::styled("     ", theme::dim()),
             };
 
-            // Compose the line.
-            let mut spans = vec![
-                Span::styled(format!(" {icon} "), theme::list_item()),
-                Span::styled(
-                    format!("{name:<28}"),
+            // Name style changes based on pending op too
+            let name_style = match pending_op {
+                Some(PendingOperation::Connecting) => theme::connecting_pulse(),
+                Some(PendingOperation::Disconnecting) => theme::disconnecting_pulse(),
+                Some(PendingOperation::Pairing) => theme::pairing_pulse(),
+                Some(PendingOperation::Removing) => theme::removing_pulse(),
+                None => {
                     if device.connected {
                         theme::connected()
                     } else if device.paired {
                         theme::paired()
                     } else {
                         theme::list_item()
-                    },
-                ),
-            ];
+                    }
+                }
+            };
+
+            // Compose the line.
+            let mut spans = vec![icon_span, Span::styled(format!("{name:<28}"), name_style)];
             spans.extend(badges);
             spans.push(battery_span);
             spans.push(rssi_span);
@@ -83,12 +113,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(Span::styled(title, theme::title()))
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(theme::border_active());
 
     let list = List::new(items)
         .block(block)
         .highlight_style(theme::selected())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(" ┃ ");
 
     let mut state = ListState::default();
     if !filtered.is_empty() {
