@@ -1,178 +1,114 @@
-# VOIDLINK
+# 󰂯 VoidLink
 
-A memory-safe, keyboard-first Bluetooth manager for Linux terminals in modern Wayland workflows.
+**VoidLink** is a high-performance, keyboard-first Bluetooth manager for Linux terminals. Engineered in Rust for modern Wayland workflows, it provides a sleek, memory-safe interface to the BlueZ stack via D-Bus, eliminating the overhead of subprocess-heavy alternatives.
 
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-f74c00?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![AUR](https://img.shields.io/aur/version/voidlink?style=flat-square&color=0891b2&label=AUR)](https://aur.archlinux.org/packages/voidlink)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2ea043?style=flat-square)](LICENSE)
-[![Wayland](https://img.shields.io/badge/Wayland-native%20workflow-7d8590?style=flat-square)](https://wayland.freedesktop.org)
 [![Maintenance](https://img.shields.io/badge/Maintained-actively-1f883d?style=flat-square)](https://github.com/cptdawn/VoidLink)
 
-![Demo](assets/demo.gif)
+---
 
-> [!NOTE]
-> VoidLink does **not** speak Wayland protocols directly; it is a terminal UI. It is compositor-agnostic (including Hyprland, Sway, GNOME, KDE) and talks to Bluetooth through BlueZ on the system D-Bus.
+## 󰄛 Why VoidLink?
 
-## Why
+Legacy Bluetooth tools often rely on parsing the output of interactive shells, leading to fragile behavior and high resource churn. VoidLink takes a different path:
 
-Most legacy Bluetooth interfaces are wrappers over interactive shell tooling, with subprocess churn and fragile text parsing. VoidLink is engineered as a direct, typed system client: an async Rust worker owns BlueZ communication over D-Bus, while the UI loop remains isolated and deterministic.
+- **Native D-Bus Integration:** Talks directly to BlueZ using the `bluer` crate. No `bluetoothctl` subprocesses.
+- **Async Architecture:** A dedicated Tokio worker handles the Bluetooth stack, ensuring the UI remains snappy and responsive.
+- **Zero-Polling:** Redraws are strictly event-driven. The UI only wakes up when your adapter or devices actually change.
+- **Keyboard-First:** Every action is a keystroke away, designed to fit perfectly into tiling window manager workflows (Hyprland, Sway, etc.).
 
-This architecture keeps the binary small, avoids polling loops, and preserves strict ownership boundaries between terminal rendering and transport logic. The result is predictable behavior under load, strong memory safety guarantees, and clean UNIX-style separation of concerns.
+## 󱐋 Features
 
-## Features
+- **Full Lifecycle Management:** Power, scan, pair, trust, connect, and remove devices with ease.
+- **Custom Bluetooth Agent:** Seamlessly handles PIN and passkey forwarding directly within the TUI.
+- **Live Search & Filter:** Instant device filtering using plain text, smart regex, or substring matching.
+- **Deep Device Insights:** Detailed panel showing RSSI (Signal), Battery level, Device Class, and Connection status with live gauges.
+- **Persistent Configuration:** Fully customizable keybindings and color palettes via `~/.config/voidlink/config.toml`.
+- **Modern TUI:** Built with `ratatui` and Nerd Fonts for a beautiful, professional terminal experience.
 
-- Direct BlueZ integration over system D-Bus via `bluer` (no `bluetoothctl` subprocess layer)
-- Event-driven worker model with bounded `tokio::mpsc` channels (`BtCommand` and `BtEvent`)
-- Zero-polling UI path: redraws are dirty-flag driven; adapter/device updates are signal-based
-- Full lifecycle operations: power, scan, pair, trust toggle, connect/disconnect, remove, alias rename
-- Custom BlueZ Agent implementation for passkey/PIN forwarding into the TUI
-- Configurable connect lifecycle (`pair -> trust -> connect`) with timeout controls
-- Runtime-sortable device list (`default`, `name`, `rssi`, `address`) and live search (`plain`/`regex`/`smart`)
-- Embedded default config bootloader with first-run materialization to XDG config directory
-- Terminal-safe lifecycle management (raw mode + alternate screen restore on panic)
-
-## Installation
+## 󰏔 Installation
 
 ### Arch Linux (AUR)
+VoidLink is available on the AUR. You can install it using your favorite AUR helper:
 
 ```bash
 paru -S voidlink
-# Or
+# or
 yay -S voidlink
 ```
 
 ### Build from Source
+Ensure you have the Rust toolchain installed.
 
 ```bash
 git clone https://github.com/cptdawn/VoidLink.git
 cd VoidLink
 cargo build --release
-sudo cp target/release/voidlink /usr/bin/
+install -Dm755 target/release/voidlink -t ~/.local/bin/
 ```
 
-## Configuration
+## 󰌌 Keybindings
 
-VoidLink uses an embedded asset bootloader pattern:
+VoidLink uses intuitive, Vim-like defaults. All keys are remappable in the config file.
 
-1. `default_config.toml` is embedded at compile time via `include_str!`.
-2. On first launch, the app creates the user config file and writes embedded defaults.
-3. On subsequent launches, user TOML is parsed; missing fields fall back to defaults with `serde` defaults.
-4. The resolved runtime config is stored in a global `OnceLock` and accessed as an immutable singleton.
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` | Move selection (or `↑`/`↓`) |
+| `Enter` | Toggle Connection (Connect/Disconnect) |
+| `p` | Initiate Pairing |
+| `t` | Toggle Trust Status |
+| `r` | Remove/Forget Device |
+| `a` | Toggle Adapter Power |
+| `s` | Start/Stop Scanning |
+| `S` | Cycle Sort Mode (Name, RSSI, Address, Default) |
+| `/` | Search Mode (prefix with `/` for Regex) |
+| `A` | Rename Device (Alias) |
+| `?` | Show Help Overlay |
+| `q` | Quit |
 
-Generated path:
+## 󰒓 Configuration
 
-```text
-~/.config/voidlink/config.toml
-```
-
-Example:
+On first run, VoidLink generates a default configuration at `~/.config/voidlink/config.toml`.
 
 ```toml
 [general]
 tick_rate_ms = 16
 scan_on_startup = false
-hide_unnamed_devices = false
 device_list_percent = 55
 sort_mode = "default"      # default | name | rssi | address
 search_mode = "smart"      # smart | plain | regex
 
-[bluetooth]
-auto_trust_on_pair = true
-connection_timeout_secs = 30
-
-[notifications]
-success_duration_ms = 3000
-error_duration_ms = 7000
-slide_speed = 0.08
-
-[keybindings]
-quit = "q"
-nav_down = "j"
-nav_up = "k"
-search = "/"
-toggle_adapter = "a"
-toggle_scan = "s"
-connect_toggle = "Enter"
-pair = "p"
-trust = "t"
-disconnect = "d"
-remove = "r"
-refresh = "R"
-cycle_sort = "S"
-rename = "A"
+[theme.palette]
+accent_primary = "#0891b2"    # Plasma Cyan
+accent_secondary = "#8b5cf6"  # Nebula Violet
+accent_error = "#ef4444"      # Dawn Red
+text_primary = "#f8fafc"      # Starlight
+text_dim = "#94a3b8"          # Cosmic Dust
 ```
 
-Key groups:
+## 󰡄 Architecture
 
-- `[general]`: render cadence, startup behavior, list layout, sorting/search semantics
-- `[bluetooth]`: trust automation and connection timeout envelope
-- `[notifications]`: popup timing and animation rate
-- `[theme.palette]`: color tokens consumed by the TUI theme layer
-- `[keybindings]`: remappable keycodes for all major actions
+VoidLink follows a strict separation of concerns:
 
-## Usage
+- **Main Thread:** Manages the `ratatui` render loop and processes user input.
+- **Bluetooth Worker:** A background Tokio task that owns the BlueZ session and adapter handles.
+- **Communication:** Bounded `mpsc` channels ensure safe, asynchronous communication between the UI and system layers.
 
-Start VoidLink:
+## 󰝒 Contributing
 
-```bash
-voidlink
-```
+We welcome contributions! Please feel free to open issues or submit pull requests.
 
-If not installed globally:
+1. Fork the repo.
+2. Create your feature branch (`git checkout -b feat/new-feature`).
+3. Commit your changes.
+4. Push to the branch.
+5. Open a Pull Request.
 
-```bash
-cargo run --release
-```
+## 󰈚 License
 
-Core shortcuts:
+VoidLink is released under the [MIT License](LICENSE).
 
-| Key | Action |
-| --- | --- |
-| `j` / `k` or `↑` / `↓` | Move selection |
-| `g` / `G` | Jump top / bottom |
-| `a` | Toggle adapter power |
-| `s` | Start/stop discovery |
-| `Enter` | Connect/disconnect selected device |
-| `p` | Pair selected device |
-| `t` | Toggle trust |
-| `d` | Disconnect |
-| `r` | Remove/forget device |
-| `R` | Refresh selected device snapshot |
-| `A` | Set alias (rename) |
-| `S` | Cycle sort mode |
-| `/` | Search mode (smart regex if prefixed with `/`) |
-| `?` | Help overlay |
-| `q` or `Ctrl+C` | Quit |
+---
 
-## Architecture
-
-```text
-UI thread (ratatui + crossterm)
-  ├─ owns App state and render loop
-  ├─ processes keyboard/resize/tick events
-  └─ sends BtCommand over bounded mpsc
-
-Tokio Bluetooth worker
-  ├─ owns bluer::Session + default Adapter
-  ├─ registers custom BlueZ Agent callbacks
-  ├─ consumes BtCommand and executes BlueZ operations
-  └─ emits BtEvent snapshots/results to UI
-```
-
-Protocol stack in use:
-
-- Bluetooth control plane: BlueZ over system D-Bus
-- Rust access layer: `bluer` crate
-- Terminal frontend: `ratatui` + `crossterm`
-
-## Contributing
-
-Contributions are welcome. Please open an issue for substantial changes before submitting a PR.
-
-1. Fork the repository
-2. Create a branch: `git checkout -b feat/<topic>`
-3. Build and test locally: `cargo build --release`
-4. Submit a focused pull request with a clear rationale
-
-## License
-
-Licensed under the MIT License. See [LICENSE](LICENSE).
+*Crafted with 󰄛 by CPTDawn.*
