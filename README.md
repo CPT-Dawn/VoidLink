@@ -1,4 +1,4 @@
-# 󰂯 VoidLink
+# VoidLink
 
 **VoidLink** is a high-performance, keyboard-first Bluetooth manager for Linux terminals. Engineered in Rust for modern Wayland workflows, it provides a sleek, memory-safe interface to the BlueZ stack via D-Bus, eliminating the overhead of subprocess-heavy alternatives.
 
@@ -9,7 +9,7 @@
 
 ---
 
-## 󰄛 Why VoidLink?
+## Why VoidLink?
 
 Legacy Bluetooth tools often rely on parsing the output of interactive shells, leading to fragile behavior and high resource churn. VoidLink takes a different path:
 
@@ -18,7 +18,7 @@ Legacy Bluetooth tools often rely on parsing the output of interactive shells, l
 - **Zero-Polling:** Redraws are strictly event-driven. The UI only wakes up when your adapter or devices actually change.
 - **Keyboard-First:** Every action is a keystroke away, designed to fit perfectly into tiling window manager workflows (Hyprland, Sway, etc.).
 
-## 󱐋 Features
+## Features
 
 - **Full Lifecycle Management:** Power, scan, pair, trust, connect, and remove devices with ease.
 - **Custom Bluetooth Agent:** Seamlessly handles PIN and passkey forwarding directly within the TUI.
@@ -27,7 +27,7 @@ Legacy Bluetooth tools often rely on parsing the output of interactive shells, l
 - **Persistent Configuration:** Fully customizable keybindings and color palettes via `~/.config/voidlink/config.toml`.
 - **Modern TUI:** Built with `ratatui` and Nerd Fonts for a beautiful, professional terminal experience.
 
-## 󰏔 Installation
+## Installation
 
 ### Arch Linux (AUR)
 VoidLink is available on the AUR. You can install it using your favorite AUR helper:
@@ -48,7 +48,7 @@ cargo build --release
 install -Dm755 target/release/voidlink -t ~/.local/bin/
 ```
 
-## 󰌌 Keybindings
+## Keybindings
 
 VoidLink uses intuitive, Vim-like defaults. All keys are remappable in the config file.
 
@@ -67,7 +67,7 @@ VoidLink uses intuitive, Vim-like defaults. All keys are remappable in the confi
 | `?` | Show Help Overlay |
 | `q` | Quit |
 
-## 󰒓 Configuration
+## Configuration
 
 On first run, VoidLink generates a default configuration at `~/.config/voidlink/config.toml`.
 
@@ -87,7 +87,7 @@ text_primary = "#f8fafc"      # Starlight
 text_dim = "#94a3b8"          # Cosmic Dust
 ```
 
-## 󰡄 Architecture
+## Architecture
 
 VoidLink follows a strict separation of concerns:
 
@@ -95,7 +95,7 @@ VoidLink follows a strict separation of concerns:
 - **Bluetooth Worker:** A background Tokio task that owns the BlueZ session and adapter handles.
 - **Communication:** Bounded `mpsc` channels ensure safe, asynchronous communication between the UI and system layers.
 
-## 󰝒 Contributing
+## Contributing
 
 We welcome contributions! Please feel free to open issues or submit pull requests.
 
@@ -105,7 +105,7 @@ We welcome contributions! Please feel free to open issues or submit pull request
 4. Push to the branch.
 5. Open a Pull Request.
 
-## 󰈚 License
+## License
 
 VoidLink is released under the [MIT License](LICENSE).
 
