@@ -26,12 +26,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(bar, area);
 }
 
-/// Key style: deep purple, bold, no background wrapping.
 fn key(s: &str) -> Span<'_> {
     Span::styled(
         s,
         Style::default()
-            .fg(theme::deep_purple())
+            .fg(theme::cyan())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -43,7 +42,7 @@ fn desc(s: &str) -> Span<'_> {
 
 /// Separator between groups.
 fn sep() -> Span<'static> {
-    Span::styled("   ", Style::default())
+    Span::styled("  │  ", Style::default().fg(theme::deep_purple()))
 }
 
 fn normal_hints(app: &App) -> Vec<Span<'static>> {
