@@ -35,7 +35,6 @@ pub fn render(frame: &mut Frame, _app: &App) {
                 ("Enter", "Connect / Disconnect (toggle)"),
                 ("p", "Pair with device"),
                 ("t", "Toggle trusted"),
-                ("d", "Disconnect device"),
                 ("r", "Remove / forget device"),
                 ("R", "Refresh device info"),
                 ("A", "Rename device alias"),

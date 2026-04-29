@@ -3,7 +3,7 @@
 //! Shows context-aware keybindings in a compact, styled row that adapts
 //! to the current input mode (Normal, Search, Dialog, Rename).
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -22,29 +22,28 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = Line::from(spans);
-    let bar = Paragraph::new(line);
+    let bar = Paragraph::new(line).alignment(Alignment::Center);
     frame.render_widget(bar, area);
 }
 
-/// Key style: accented, bold, slightly reversed for a modern "badge" look.
+/// Key style: deep purple, bold, no background wrapping.
 fn key(s: &str) -> Span<'_> {
     Span::styled(
-        format!(" {s} "),
+        s,
         Style::default()
-            .fg(theme::text_primary())
-            .bg(theme::deep_purple())
+            .fg(theme::deep_purple())
             .add_modifier(Modifier::BOLD),
     )
 }
 
 /// Description style: dimmed.
 fn desc(s: &str) -> Span<'_> {
-    Span::styled(format!(" {s} "), Style::default().fg(theme::text_dim()))
+    Span::styled(format!(" {s}"), Style::default().fg(theme::text_dim()))
 }
 
 /// Separator between groups.
 fn sep() -> Span<'static> {
-    Span::raw("   ")
+    Span::styled("   ", Style::default())
 }
 
 fn normal_hints(app: &App) -> Vec<Span<'static>> {
@@ -76,10 +75,6 @@ fn normal_hints(app: &App) -> Vec<Span<'static>> {
 
     hints.push(key("t"));
     hints.push(desc("Trust"));
-    hints.push(sep());
-
-    hints.push(key("d"));
-    hints.push(desc("Disconnect"));
     hints.push(sep());
 
     hints.push(key("r"));
