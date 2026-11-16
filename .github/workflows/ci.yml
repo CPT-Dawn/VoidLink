@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt · clippy · test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --features demo -- -D warnings
+      - run: cargo test --locked --features demo
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked
+
+  pkgbuild:
+    name: PKGBUILD lint
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint PKGBUILD templates
+        run: |
+          pacman -Syu --noconfirm --needed namcap
+          for pkg in voidlink voidlink-bin; do
+            mkdir -p "/tmp/$pkg"
+            sed -e 's/@PKGVER@/0.0.0/' -e 's/@PKGREL@/1/' -e 's/@[A-Z0-9_]*@/SKIP/g' \
+              "packaging/aur/$pkg/PKGBUILD.in" > "/tmp/$pkg/PKGBUILD"
+            bash -n "/tmp/$pkg/PKGBUILD"
+            namcap "/tmp/$pkg/PKGBUILD"
+          done
