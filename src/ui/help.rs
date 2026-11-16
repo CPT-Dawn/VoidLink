@@ -1,111 +1,118 @@
-//! Help overlay — keybinding reference.
+//! Help overlay, generated from the active keybindings.
 
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::App;
+use ratatui::layout::{Constraint, Layout};
+
+use super::{modal_frame, truncate};
+use crate::config::{self, key_label};
 use crate::theme;
 
-/// Render the help overlay.
-pub fn render(frame: &mut Frame, _app: &App) {
-    let area = centered_rect(60, 70, frame.area());
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(Span::styled(" 󰋖 Keybindings ", theme::title()))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::deep_purple()));
-
-    let keybindings = vec![
+pub fn render(frame: &mut Frame) {
+    let kb = &config::get().keys;
+    let k = |code| key_label(code);
+    let sections: [(&str, Vec<(String, &str)>); 4] = [
         (
-            "Navigation",
+            "Navigate",
             vec![
-                ("j / ↓", "Move cursor down"),
-                ("k / ↑", "Move cursor up"),
-                ("g", "Jump to top"),
-                ("G", "Jump to bottom"),
+                (format!("{} {} ↑ ↓", k(kb.nav_down), k(kb.nav_up)), "Move"),
+                (
+                    format!("{} {}", k(kb.jump_top), k(kb.jump_bottom)),
+                    "Top / bottom",
+                ),
+                (k(kb.search), "Search (/ for regex)"),
+                (k(kb.cycle_sort), "Sort order"),
+                ("Esc".into(), "Clear search"),
+                ("Mouse".into(), "Click, double-click"),
             ],
         ),
         (
-            "Device Actions",
+            "Devices",
             vec![
-                ("Enter", "Connect / Disconnect (toggle)"),
-                ("p", "Pair with device"),
-                ("t", "Toggle trusted"),
-                ("r", "Remove / forget device"),
-                ("R", "Refresh device info"),
-                ("A", "Rename device alias"),
+                (k(kb.connect_toggle), "Connect / disconnect"),
+                (k(kb.disconnect), "Disconnect"),
+                (k(kb.pair), "Pair only"),
+                (k(kb.trust), "Trust / untrust"),
+                (k(kb.rename), "Rename"),
+                (k(kb.remove), "Forget"),
+                (k(kb.refresh), "Refresh"),
             ],
         ),
         (
-            "Adapter",
+            "Bluetooth",
             vec![
-                ("a", "Toggle adapter power"),
-                ("s", "Toggle scanning"),
-                ("S", "Cycle sort mode"),
+                (k(kb.toggle_scan), "Scan on / off"),
+                (k(kb.toggle_adapter), "Power on / off"),
             ],
         ),
         (
-            "Other",
-            vec![
-                ("/", "Search (regex: start with /)"),
-                ("?", "Toggle this help"),
-                ("q", "Quit VoidLink"),
-                ("Esc", "Dismiss popup / exit mode"),
-            ],
+            "App",
+            vec![(k(kb.help), "This help"), (k(kb.quit), "Quit (Ctrl+C)")],
         ),
     ];
 
-    let mut lines = vec![Line::from("")];
-
-    for (section, bindings) in &keybindings {
-        lines.push(Line::from(Span::styled(
-            format!("  ── {section} ──"),
-            Style::default()
-                .fg(theme::cyan())
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-
-        for (key, desc) in bindings {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {key:<12}"),
-                    Style::default()
-                        .fg(theme::deep_purple())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(*desc, theme::list_item()),
-            ]));
+    let section_lines = |secs: &[(&str, Vec<(String, &str)>)], desc_w: usize| {
+        let mut lines = Vec::new();
+        for (i, (title, rows)) in secs.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::from(Span::styled(
+                title.to_uppercase(),
+                theme::section(),
+            )));
+            for (key, desc) in rows {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {key:<10}"), theme::key()),
+                    Span::styled(truncate(desc, desc_w), theme::body()),
+                ]));
+            }
         }
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(Span::styled(
-        "  Press ESC or ? to close",
+        lines
+    };
+    let footer = Line::from(Span::styled(
+        format!("Config: {}", config::config_path().display()),
         theme::dim(),
-    )));
+    ));
+    let title = format!(" {} Keybindings ", theme::help_icon());
+    let screen = frame.area();
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
+    let mut single = section_lines(&sections, 44);
+    single.push(Line::raw(""));
+    single.push(footer.clone());
+    let tall = u16::try_from(single.len()).unwrap_or(u16::MAX) + 3;
 
-    frame.render_widget(paragraph, area);
-}
-
-/// Compute a centered rectangle (safe — no raw indexing).
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let width = (area.width as u32 * percent_x.min(100) as u32 / 100) as u16;
-    let height = (area.height as u32 * percent_y.min(100) as u32 / 100) as u16;
-    let x = area.x + area.width.saturating_sub(width) / 2;
-    let y = area.y + area.height.saturating_sub(height) / 2;
-    Rect {
-        x,
-        y,
-        width,
-        height,
+    if tall <= screen.height || screen.width < 70 {
+        let inner = modal_frame(frame, &title, 62, tall, theme::accent2());
+        frame.render_widget(Paragraph::new(single), inner);
+        return;
     }
+
+    // Short terminal: two columns.
+    let width = screen.width.saturating_sub(4).min(110);
+    let col_w = usize::from(width.saturating_sub(8) / 2);
+    let desc_w = col_w.saturating_sub(13);
+    let [nav, devices, bluetooth, app] = sections;
+    let left = section_lines(&[nav, app], desc_w);
+    let right = section_lines(&[devices, bluetooth], desc_w);
+    let rows = left.len().max(right.len());
+    let height = u16::try_from(rows).unwrap_or(u16::MAX) + 5;
+    let inner = modal_frame(frame, &title, width, height, theme::accent2());
+    let [cols, _, foot] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let [l, _, r] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(2),
+        Constraint::Fill(1),
+    ])
+    .areas(cols);
+    frame.render_widget(Paragraph::new(left), l);
+    frame.render_widget(Paragraph::new(right), r);
+    frame.render_widget(Paragraph::new(footer), foot);
 }

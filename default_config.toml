@@ -3,11 +3,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #
 #  Location : ~/.config/voidlink/config.toml
-#  Docs     : https://github.com/cptdawn/VoidLink
+#  Docs     : https://github.com/CPT-Dawn/VoidLink
 #
 #  This file is auto-generated on first launch with sensible defaults.
-#  All sections and keys are OPTIONAL — missing values silently fall back
-#  to the compiled-in defaults shown below.
+#  Every key is OPTIONAL — anything missing falls back to the defaults below.
+#  Invalid values are reported inside VoidLink and replaced by the default.
+#  Print a fresh copy any time with:  voidlink --print-default-config
 #
 #  Colors   : standard "#RRGGBB" hex notation.
 #  Keys     : single characters ("q", "/", "G") or named keys
@@ -19,28 +20,36 @@
 
 [general]
 
-# Render tick rate in milliseconds.  Lower = smoother animations, more CPU.
-# Sweet spot for most machines is 16 (~60 FPS).  Range: 4–200.
-tick_rate_ms = 16
+# Animation frame interval in milliseconds while something is moving
+# (spinners, toasts). When idle, VoidLink doesn't redraw at all.  Range: 8–200.
+tick_rate_ms = 33
 
 # Automatically begin scanning for devices when VoidLink starts.
 scan_on_startup = false
 
-# Hide devices that have not reported a friendly name (address-only entries).
-# Useful for de-cluttering when many unknown BLE advertisers are in range.
+# Hide nearby devices that have no name (anonymous BLE beacons).
+# Paired devices are always shown.
 hide_unnamed_devices = false
 
-# Width of the device-list pane as a percentage of terminal width.
-# The detail panel fills the remaining space.  Range: 20–80.
-device_list_percent = 55
+# Width of the device list as a percentage of the window (wide terminals).
+# The details panel fills the rest.  Range: 30–75.
+device_list_percent = 58
 
 # Device sort order.  Cycle at runtime with `S`.
 # Options: "default" (connected→paired→rssi), "name", "rssi", "address".
 sort_mode = "default"
 
 # Search mode for the `/` filter.
-# Options: "smart" (auto-detect regex), "plain" (substring), "regex" (always).
+# Options: "smart" (regex when the query starts with /), "plain", "regex".
 search_mode = "smart"
+
+# Use Nerd Font icons. Set to false (or run with --no-nerd-font) if you see
+# boxes or question marks instead of icons.
+nerd_font = true
+
+# Mouse support: click to select, double-click to connect, wheel to scroll.
+# Set to false (or run with --no-mouse) to keep your terminal's text selection.
+mouse = true
 
 # ── Bluetooth ────────────────────────────────────────────────────────────────
 
@@ -64,9 +73,6 @@ success_duration_ms = 3000
 
 # How long an *error* toast stays visible (ms).
 error_duration_ms = 7000
-
-# Popup slide-in speed per tick (0.01–1.0).  Higher = faster entrance.
-slide_speed = 0.08
 
 # ── Theme — Cosmic Dawn ──────────────────────────────────────────────────────
 #
@@ -122,6 +128,7 @@ help = "?"
 toggle_adapter = "a"
 toggle_scan = "s"
 connect_toggle = "Enter"
+disconnect = "d"
 pair = "p"
 trust = "t"
 remove = "r"

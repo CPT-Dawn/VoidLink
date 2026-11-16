@@ -1,85 +1,78 @@
-//! Unified event loop that merges crossterm terminal events, Bluetooth worker
-//! events, and a fixed-rate tick into a single async stream.
-//!
-//! The TUI main loop `select!`s over `EventHandler::next()` to process all
-//! three sources without blocking the render path.
+//! Unified event source: terminal input, Bluetooth worker events, Unix
+//! signals and an animation tick, merged into one async `next()`.
 
 use std::time::Duration;
 
 use color_eyre::Result;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, KeyEventKind};
+use crossterm::event::{Event as CtEvent, EventStream, KeyEvent, KeyEventKind, MouseEvent};
 use futures::StreamExt;
+use tokio::signal::unix::{signal, Signal, SignalKind};
 use tokio::sync::mpsc;
 
 use crate::bluetooth::types::BtEvent;
 
-/// Unified event type consumed by the TUI main loop.
 #[derive(Debug)]
 pub enum Event {
-    /// A key was pressed (only `Press` kind — ignores release/repeat on
-    /// platforms that emit them).
     Key(KeyEvent),
-    /// Terminal was resized.
-    #[allow(dead_code)]
-    Resize(u16, u16),
-    /// Animation / state tick.
+    Mouse(MouseEvent),
+    Resize,
+    /// Animation tick — only produced while something is animating.
     Tick,
-    /// An event from the Bluetooth worker task.
     Bluetooth(BtEvent),
+    /// SIGTERM / SIGHUP / SIGINT: quit cleanly and restore the terminal.
+    Terminate,
 }
 
-/// Multiplexes crossterm events, a tick timer, and the Bluetooth event channel
-/// into a single `Event` stream.
 pub struct EventHandler {
-    /// Async crossterm event reader.
-    crossterm_stream: EventStream,
-    /// Tick interval for animations.
-    tick_interval: tokio::time::Interval,
-    /// Receiver end of the BT worker → UI channel.
+    terminal: EventStream,
+    tick: tokio::time::Interval,
     bt_rx: mpsc::Receiver<BtEvent>,
+    bt_open: bool,
+    sigterm: Signal,
+    sighup: Signal,
+    sigint: Signal,
 }
 
 impl EventHandler {
-    pub fn new(bt_rx: mpsc::Receiver<BtEvent>) -> Self {
-        let tick_ms = crate::config::get().general.tick_rate_ms;
-        let mut tick_interval = tokio::time::interval(Duration::from_millis(tick_ms));
-        // Don't try to "catch up" missed ticks — just keep going.
-        tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        Self {
-            crossterm_stream: EventStream::new(),
-            tick_interval,
+    pub fn new(bt_rx: mpsc::Receiver<BtEvent>) -> Result<Self> {
+        let ms = crate::config::get().general.tick_rate_ms;
+        let mut tick = tokio::time::interval(Duration::from_millis(ms));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Ok(Self {
+            terminal: EventStream::new(),
+            tick,
             bt_rx,
-        }
+            bt_open: true,
+            sigterm: signal(SignalKind::terminate())?,
+            sighup: signal(SignalKind::hangup())?,
+            sigint: signal(SignalKind::interrupt())?,
+        })
     }
 
-    /// Await the next event from any source. Returns `None` only when all
-    /// sources are exhausted (which shouldn't happen during normal operation).
-    pub async fn next(&mut self) -> Result<Event> {
+    /// Wait for the next event. When `animating` is false no ticks are
+    /// produced, so an idle VoidLink uses no CPU at all.
+    pub async fn next(&mut self, animating: bool) -> Result<Event> {
         loop {
             tokio::select! {
-                // ── Bluetooth events (highest priority) ─────────────────
-                Some(bt_event) = self.bt_rx.recv() => {
-                    return Ok(Event::Bluetooth(bt_event));
-                }
-
-                // ── Terminal events ─────────────────────────────────────
-                Some(ct_result) = self.crossterm_stream.next() => {
-                    match ct_result? {
-                        CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                            return Ok(Event::Key(key));
-                        }
-                        CrosstermEvent::Resize(w, h) => return Ok(Event::Resize(w, h)),
-                        // Swallow key release/repeat — loop again instead
-                        // of emitting a Tick that would trigger a redraw.
-                        _ => continue,
+                bt = self.bt_rx.recv(), if self.bt_open => match bt {
+                    Some(evt) => return Ok(Event::Bluetooth(evt)),
+                    None => self.bt_open = false,
+                },
+                term = self.terminal.next() => match term {
+                    Some(Ok(CtEvent::Key(key))) if key.kind != KeyEventKind::Release => {
+                        return Ok(Event::Key(key));
                     }
-                }
-
-                // ── Tick timer ──────────────────────────────────────────
-                _ = self.tick_interval.tick() => {
-                    return Ok(Event::Tick);
-                }
+                    Some(Ok(CtEvent::Mouse(m))) => return Ok(Event::Mouse(m)),
+                    Some(Ok(CtEvent::Resize(..))) => return Ok(Event::Resize),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e.into()),
+                    // stdin closed: nothing more can ever arrive.
+                    None => return Ok(Event::Terminate),
+                },
+                _ = self.tick.tick(), if animating => return Ok(Event::Tick),
+                _ = self.sigterm.recv() => return Ok(Event::Terminate),
+                _ = self.sighup.recv() => return Ok(Event::Terminate),
+                _ = self.sigint.recv() => return Ok(Event::Terminate),
             }
         }
     }

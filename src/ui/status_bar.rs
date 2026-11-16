@@ -1,114 +1,97 @@
-//! Adapter status bar at the top of the screen.
+//! One-line header: brand, adapter state on the left; counts and sort on the right.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, InputMode};
+use crate::app::{App, BtStatus};
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let adapter = &app.adapter;
+    let sep = || Span::styled("  ·  ", theme::fg(theme::edge()));
 
-    let mut spans = vec![
+    let mut left = vec![
         Span::styled(
-            " 󰂯 VoidLink ",
-            ratatui::style::Style::default()
-                .fg(theme::cyan())
-                .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::REVERSED),
+            format!(" {} VoidLink ", theme::logo()),
+            theme::bold(theme::accent()).add_modifier(Modifier::REVERSED),
         ),
-        Span::raw(" "),
+        Span::raw("  "),
     ];
 
-    // Adapter name & address.
-    let addr_str = adapter
-        .address
-        .map(|a| a.to_string())
-        .unwrap_or_else(|| "??:??:??:??:??:??".into());
-    spans.push(Span::styled(
-        format!("{} [{}] ", adapter.name, addr_str),
-        theme::list_item(),
-    ));
-
-    spans.push(Span::styled("│ ", theme::dim()));
-
-    // Power state.
-    if adapter.powered {
-        spans.push(Span::styled("⏻ ON ", theme::connected()));
-    } else {
-        spans.push(Span::styled("⏻ OFF ", theme::error()));
-    }
-
-    spans.push(Span::styled("│ ", theme::dim()));
-
-    // Scanning state with animated spinner.
-    if app.scanning {
-        let frame_char = theme::spinner_frame(app.tick_count);
-        spans.push(Span::styled(
-            format!("{frame_char} Scanning "),
-            ratatui::style::Style::default()
-                .fg(theme::scanning_pulse())
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ));
-    } else {
-        spans.push(Span::styled("Idle ", theme::dim()));
-    }
-
-    // Sort mode indicator.
-    let sort_icon = theme::sort_icon(app.sort_mode);
-    let sort_label = app.sort_mode.label();
-    spans.push(Span::styled("│ ", theme::dim()));
-    spans.push(Span::styled(
-        format!("{sort_icon} {sort_label} "),
-        ratatui::style::Style::default()
-            .fg(theme::deep_purple())
-            .add_modifier(ratatui::style::Modifier::BOLD),
-    ));
-
-    // Search indicator.
-    if app.input_mode == InputMode::Search {
-        spans.push(Span::styled("│ ", theme::dim()));
-        spans.push(Span::styled(
-            format!("/ {}", app.search_query),
-            ratatui::style::Style::default()
-                .fg(theme::cyan())
-                .add_modifier(ratatui::style::Modifier::ITALIC),
-        ));
-        spans.push(Span::styled("█", theme::connected())); // cursor
-
-        // Inline search error (regex).
-        if !app.search_error.is_empty() {
-            spans.push(Span::styled(
-                format!("  {}", app.search_error),
-                theme::error(),
+    match &app.status {
+        BtStatus::Starting => {
+            left.push(Span::styled(
+                format!("{} Connecting to BlueZ…", theme::spinner(app.elapsed_ms())),
+                theme::dim(),
             ));
+        }
+        BtStatus::Unavailable(_) => {
+            left.push(Span::styled("● Bluetooth unavailable", theme::error()));
+        }
+        BtStatus::Ready => {
+            let name = if app.adapter.alias.is_empty() {
+                app.adapter.name.as_str()
+            } else {
+                app.adapter.alias.as_str()
+            };
+            left.push(Span::styled(name.to_string(), theme::body()));
+            left.push(sep());
+            if app.adapter.powered {
+                left.push(Span::styled(
+                    format!("{} On", theme::power()),
+                    theme::bold(theme::green()),
+                ));
+            } else {
+                left.push(Span::styled(
+                    format!("{} Off", theme::power()),
+                    theme::bold(theme::red()),
+                ));
+            }
+            if app.scanning {
+                left.push(sep());
+                left.push(Span::styled(
+                    format!("{} Scanning", theme::spinner(app.elapsed_ms())),
+                    theme::bold(theme::pulse()),
+                ));
+            }
         }
     }
 
-    // Rename indicator.
-    if app.input_mode == InputMode::Rename {
-        spans.push(Span::styled("│ ", theme::dim()));
-        spans.push(Span::styled(
-            format!(" Rename: {}█", app.rename_buffer),
-            ratatui::style::Style::default()
-                .fg(theme::cyan())
-                .add_modifier(ratatui::style::Modifier::ITALIC),
+    let mut right = Vec::new();
+    if app.filter_active() {
+        right.push(Span::styled(
+            format!("{} {}", theme::search_icon(), app.search_query),
+            theme::bold(theme::accent2()),
         ));
+        right.push(sep());
+    }
+    if app.is_ready() {
+        let n = app.visible_count();
+        right.push(Span::styled(
+            format!("{n} device{}", if n == 1 { "" } else { "s" }),
+            theme::dim(),
+        ));
+        right.push(sep());
+        right.push(Span::styled(
+            format!("{} {}", theme::sort_glyph(), app.sort_mode.label()),
+            theme::dim(),
+        ));
+        right.push(Span::raw(" "));
     }
 
-    // Device count
-    let device_count = app.filtered_count();
-    spans.push(Span::styled("│ ", theme::dim()));
-    spans.push(Span::styled(
-        format!("{device_count} devices"),
-        theme::dim(),
-    ));
-
-    let line = Line::from(spans);
-    // Removed bottom border for a cleaner top-bar look
-    let block = Block::default();
-
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
+    let left = Line::from(left);
+    let right = Line::from(right);
+    // Drop the right side rather than overlap on narrow terminals.
+    if usize::from(area.width) > left.width() + right.width() + 2 {
+        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
+    }
+    let left_area = Rect {
+        width: u16::try_from(left.width())
+            .unwrap_or(u16::MAX)
+            .min(area.width),
+        ..area
+    };
+    frame.render_widget(Paragraph::new(left), left_area);
 }

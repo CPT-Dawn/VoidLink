@@ -1,11 +1,21 @@
 [package]
 name = "voidlink"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.82"
 license = "MIT"
-description = "A blazing-fast, memory-safe Bluetooth TUI manager for Linux"
-authors = ["Swastik Patel"]
+description = "A fast, keyboard-first Bluetooth manager for the Linux terminal"
+authors = ["Swastik Patel <ping@cptdawn.dev>"]
+repository = "https://github.com/CPT-Dawn/VoidLink"
+homepage = "https://github.com/CPT-Dawn/VoidLink"
+readme = "README.md"
+keywords = ["bluetooth", "tui", "bluez", "terminal", "linux"]
+categories = ["command-line-utilities", "hardware-support"]
+exclude = ["assets/", ".github/", "demo/"]
+
+[features]
+# Scripted fake adapter for recordings (VOIDLINK_DEMO=1). Never ship this.
+demo = []
 
 [dependencies]
 # ── TUI ──────────────────────────────────────────────
@@ -21,13 +31,17 @@ tokio = { version = "1", features = [
     "sync",
     "time",
     "macros",
+    "signal",
 ] }
+tokio-stream = "0.1"
 futures = "0.3"
 
 # ── Configuration ────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 directories = "6"
+
+unicode-width = "0.2"
 
 # ── Search ───────────────────────────────────────────
 regex = { version = "1", default-features = false, features = ["std", "perf"] }

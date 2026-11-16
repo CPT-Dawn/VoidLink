@@ -1,722 +1,1146 @@
 //! Application state and input handling.
 //!
-//! `App` is the single source of truth for the entire TUI. It is only mutated
-//! from the main event loop — no `Arc<Mutex<>>` needed.
+//! `App` is the single source of truth for the TUI. It is only mutated from
+//! the main event loop — no `Arc<Mutex<>>` needed. Input handlers return the
+//! `BtCommand` (if any) the main loop should forward to the worker.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
 use regex::Regex;
-use std::collections::HashMap;
-use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
-use crate::bluetooth::types::*;
-use crate::config::{SearchMode, SortMode};
+use crate::bluetooth::agent;
+use crate::bluetooth::types::{
+    AdapterInfo, Address, AgentReply, AgentRequest, BtCommand, BtEvent, DeviceInfo, Operation,
+    PromptKind,
+};
+use crate::config::{self, SearchMode, SortMode};
 
-// ─── Pending Operations ─────────────────────────────────────────────────────
+/// How many toasts can be stacked at once.
+const MAX_TOASTS: usize = 3;
+/// Two clicks on the same row within this window count as a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Rows moved by PageUp / PageDown.
+const PAGE: isize = 8;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingOperation {
-    Connecting,
-    Disconnecting,
-    Pairing,
-    Removing,
-}
+// ─── State types ────────────────────────────────────────────────────────────
 
-// ─── Input modes ────────────────────────────────────────────────────────────
-
-/// Which mode the UI is currently in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InputMode {
-    /// Normal vim-style navigation.
+/// Where keystrokes go when no modal is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
     Normal,
-    /// `/` search — keys go to the search buffer.
     Search,
-    /// A popup dialog is displayed.
-    Dialog,
-    /// `A` rename — keys go to the rename buffer.
     Rename,
 }
 
-// ─── Popup types ────────────────────────────────────────────────────────────
-
-/// Active popup overlay.
-#[derive(Debug, Clone)]
-pub enum Popup {
-    /// An error message with a sliding animation progress (0.0 → 1.0).
-    Error { message: String, slide: f32 },
-    /// Connection result notification.
-    ConnectionResult {
-        #[allow(dead_code)]
-        address: Address,
-        success: bool,
-        message: String,
-        slide: f32,
-    },
-    /// PIN display during pairing.
-    PinDisplay {
-        #[allow(dead_code)]
-        address: Address,
-        pin: String,
-        slide: f32,
-    },
-    /// Help overlay.
-    Help,
+/// Connection state of the Bluetooth backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BtStatus {
+    Starting,
+    Ready,
+    Unavailable(String),
 }
 
-impl Popup {
-    /// Get mutable reference to the slide progress, if applicable.
-    pub fn slide_mut(&mut self) -> Option<&mut f32> {
-        match self {
-            Popup::Error { slide, .. }
-            | Popup::ConnectionResult { slide, .. }
-            | Popup::PinDisplay { slide, .. } => Some(slide),
-            Popup::Help => None,
-        }
-    }
-
-    /// Get the current slide progress.
-    #[allow(dead_code)]
-    pub fn slide(&self) -> f32 {
-        match self {
-            Popup::Error { slide, .. }
-            | Popup::ConnectionResult { slide, .. }
-            | Popup::PinDisplay { slide, .. } => *slide,
-            Popup::Help => 1.0,
-        }
-    }
-}
-
-// ─── Actions produced by input handling ─────────────────────────────────────
-
-/// Actions that the main loop should execute after processing input.
+/// A pairing question from BlueZ that the user must answer.
 #[derive(Debug)]
-pub enum AppAction {
-    /// Quit the application.
-    Quit,
-    /// Send a command to the Bluetooth worker.
-    BtCommand(BtCommand),
-    /// No-op (event was consumed but requires no further action).
-    Consumed,
+pub struct Prompt {
+    pub address: Address,
+    pub kind: PromptKind,
+    reply: Option<oneshot::Sender<AgentReply>>,
+    pub input: String,
+    pub error: Option<String>,
+    pub opened: Instant,
 }
 
-// ─── App state ──────────────────────────────────────────────────────────────
+impl Prompt {
+    pub fn needs_input(&self) -> bool {
+        matches!(self.kind, PromptKind::EnterPin | PromptKind::EnterPasskey)
+    }
+
+    /// Seconds left before BlueZ gives up on this request.
+    pub fn seconds_left(&self) -> u64 {
+        agent::PROMPT_TIMEOUT
+            .saturating_sub(self.opened.elapsed())
+            .as_secs()
+    }
+}
+
+/// A focused overlay that captures input.
+#[derive(Debug)]
+pub enum Modal {
+    Help,
+    Prompt(Prompt),
+    /// Show a code the user must type on the device.
+    PairingCode {
+        address: Address,
+        code: String,
+    },
+    /// "Forget this device?" confirmation.
+    ConfirmRemove(Address),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Success,
+    Error,
+    Info,
+}
+
+/// A non-blocking notification in the corner.
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub kind: ToastKind,
+    pub message: String,
+    pub shown: Instant,
+    ttl: Duration,
+}
+
+impl Toast {
+    /// Entrance animation progress, 0 → 1 over 180 ms.
+    pub fn progress(&self) -> f32 {
+        (self.shown.elapsed().as_secs_f32() / 0.18).min(1.0)
+    }
+}
+
+/// One line of the device list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    /// Section title with the number of devices in it.
+    Header(Section, usize),
+    /// Index into `App::devices`.
+    Device(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Mine,
+    Nearby,
+}
+
+impl Section {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Mine => "MY DEVICES",
+            Self::Nearby => "NEARBY",
+        }
+    }
+}
+
+// ─── App ────────────────────────────────────────────────────────────────────
 
 pub struct App {
-    /// All known devices, sorted by current sort mode.
+    /// All known devices, kept sorted by the active sort mode.
     pub devices: Vec<DeviceInfo>,
-    /// Index of the selected device in the (possibly filtered) list.
-    pub selected_index: usize,
-    /// Current adapter snapshot.
+    /// What the list shows: filtered, sorted, grouped.
+    pub rows: Vec<Row>,
+    /// The selected device. Selection follows the device, not the row, so
+    /// re-sorting never moves the cursor onto a different device.
+    pub selected: Option<Address>,
     pub adapter: AdapterInfo,
-    /// Whether scanning is active.
+    pub status: BtStatus,
     pub scanning: bool,
-    /// Current input mode.
-    pub input_mode: InputMode,
-    /// Active search query (when in Search mode).
+    pub mode: Mode,
+    pub modal: Option<Modal>,
+    pub toasts: VecDeque<Toast>,
     pub search_query: String,
-    /// Regex error message to display inline (empty = no error).
-    pub search_error: String,
-    /// Active popup overlay.
-    pub active_popup: Option<Popup>,
-    /// Monotonic tick counter for animations.
-    pub tick_count: u64,
-    /// Auto-dismiss countdown for transient popups (in ticks).
-    pub popup_ttl: Option<u64>,
-    /// Whether the application should keep running.
-    pub running: bool,
-    /// Whether the UI needs a redraw (dirty-flag optimisation).
-    pub dirty: bool,
-    /// Active sort mode — cyclable at runtime.
-    pub sort_mode: SortMode,
-    /// Rename buffer (when in Rename mode).
+    pub search_error: Option<String>,
+    search_regex: Option<Regex>,
     pub rename_buffer: String,
-    /// Address of the device being renamed.
-    pub rename_target: Option<Address>,
-    /// Track ongoing operations per device for loading animations.
-    pub pending_ops: HashMap<Address, PendingOperation>,
-    /// Sender handle to the BT worker (retained for future use).
-    pub _bt_cmd_tx: mpsc::Sender<BtCommand>,
-    /// Cached filtered device count — updated every tick to avoid repeated alloc.
-    cached_filter_count: usize,
+    rename_target: Option<Address>,
+    /// In-flight operation per device (drives the spinners).
+    pub pending: HashMap<Address, Operation>,
+    pub sort_mode: SortMode,
+    /// Scroll state of the device list; the renderer updates its offset.
+    pub list_state: ListState,
+    /// Inner area of the device list from the last frame (for mouse hits).
+    pub list_area: Rect,
+    last_click: Option<(Instant, Address)>,
+    started: Instant,
+    pub running: bool,
+    /// Whether the UI needs a redraw.
+    pub dirty: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl App {
-    pub fn new(bt_cmd_tx: mpsc::Sender<BtCommand>) -> Self {
-        let sort_mode = crate::config::get().general.sort_mode;
+    pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            selected_index: 0,
+            rows: Vec::new(),
+            selected: None,
             adapter: AdapterInfo::default(),
+            status: BtStatus::Starting,
             scanning: false,
-            input_mode: InputMode::Normal,
+            mode: Mode::Normal,
+            modal: None,
+            toasts: VecDeque::new(),
             search_query: String::new(),
-            search_error: String::new(),
-            active_popup: None,
-            tick_count: 0,
-            popup_ttl: None,
-            running: true,
-            dirty: true,
-            sort_mode,
+            search_error: None,
+            search_regex: None,
             rename_buffer: String::new(),
             rename_target: None,
-            pending_ops: HashMap::new(),
-            _bt_cmd_tx: bt_cmd_tx,
-            cached_filter_count: 0,
+            pending: HashMap::new(),
+            sort_mode: config::get().general.sort_mode,
+            list_state: ListState::default(),
+            list_area: Rect::default(),
+            last_click: None,
+            started: Instant::now(),
+            running: true,
+            dirty: true,
         }
     }
 
-    // ── Filtered device list ────────────────────────────────────────────
+    /// Milliseconds since start; drives spinners independent of tick rate.
+    pub fn elapsed_ms(&self) -> u128 {
+        self.started.elapsed().as_millis()
+    }
 
-    /// Return the device list filtered by the current search query
-    /// and the `hide_unnamed_devices` config setting.
-    pub fn filtered_devices(&self) -> Vec<&DeviceInfo> {
-        let cfg = crate::config::get();
-        let hide_unnamed = cfg.general.hide_unnamed_devices;
-        let search_mode = cfg.general.search_mode;
+    /// Whether anything on screen is moving (so ticks should redraw).
+    pub fn is_animating(&self) -> bool {
+        self.scanning
+            || !self.pending.is_empty()
+            || !self.toasts.is_empty()
+            || matches!(self.modal, Some(Modal::Prompt(_)))
+            || self.status == BtStatus::Starting
+    }
 
-        // Compile regex once per call if needed.
-        let compiled_regex = self.compile_search_regex(search_mode);
+    pub fn is_ready(&self) -> bool {
+        self.status == BtStatus::Ready
+    }
 
-        self.devices
+    // ── Queries ─────────────────────────────────────────────────────────
+
+    pub fn device(&self, addr: Address) -> Option<&DeviceInfo> {
+        self.devices.iter().find(|d| d.address == addr)
+    }
+
+    pub fn selected_device(&self) -> Option<&DeviceInfo> {
+        self.selected.and_then(|a| self.device(a))
+    }
+
+    /// Row index of the selected device.
+    pub fn selected_row(&self) -> Option<usize> {
+        let addr = self.selected?;
+        self.rows.iter().position(|r| match r {
+            Row::Device(i) => self.devices[*i].address == addr,
+            Row::Header(..) => false,
+        })
+    }
+
+    /// Number of devices currently listed.
+    pub fn visible_count(&self) -> usize {
+        self.rows
             .iter()
-            .filter(|d| {
-                if hide_unnamed && d.name.is_none() {
-                    return false;
-                }
-                if self.search_query.is_empty() {
-                    return true;
-                }
-                match &compiled_regex {
-                    Some(re) => {
-                        re.is_match(d.display_name()) || re.is_match(&d.address.to_string())
-                    }
-                    None => {
-                        // Plain substring match.
-                        let query = self.search_query.to_lowercase();
-                        d.display_name().to_lowercase().contains(&query)
-                            || d.address.to_string().to_lowercase().contains(&query)
-                    }
-                }
-            })
-            .collect()
+            .filter(|r| matches!(r, Row::Device(_)))
+            .count()
     }
 
-    /// Compile the search query as a regex if the search mode requires it.
-    /// Returns `None` for plain substring mode, or if the regex is invalid.
-    fn compile_search_regex(&self, mode: SearchMode) -> Option<Regex> {
+    /// Name for messages: alias if known, else the address.
+    pub fn name_of(&self, addr: Address) -> String {
+        self.device(addr)
+            .map_or_else(|| addr.to_string(), |d| d.label())
+    }
+
+    pub fn filter_active(&self) -> bool {
+        !self.search_query.is_empty()
+    }
+
+    // ── List maintenance ────────────────────────────────────────────────
+
+    fn sort_devices(&mut self) {
+        match self.sort_mode {
+            SortMode::Default => self.devices.sort_by_cached_key(DeviceInfo::sort_key),
+            SortMode::Name => self
+                .devices
+                .sort_by_cached_key(|d| (d.display_name().to_lowercase(), d.address)),
+            SortMode::Rssi => self
+                .devices
+                .sort_by_key(|d| (std::cmp::Reverse(d.rssi.unwrap_or(i16::MIN)), d.address)),
+            SortMode::Address => self.devices.sort_by_key(|d| d.address),
+        }
+    }
+
+    fn matches(&self, d: &DeviceInfo) -> bool {
+        if config::get().general.hide_unnamed_devices && d.name.is_none() && !d.is_known() {
+            return false;
+        }
         if self.search_query.is_empty() {
-            return None;
+            return true;
         }
-        let use_regex = match mode {
-            SearchMode::Regex => true,
-            SearchMode::Smart => self.search_query.starts_with('/'),
-            SearchMode::Plain => false,
-        };
-        if !use_regex {
-            return None;
+        let addr = d.address.to_string();
+        match &self.search_regex {
+            Some(re) => re.is_match(d.display_name()) || re.is_match(&addr),
+            None if self.regex_requested() => true, // invalid regex: don't hide everything
+            None => {
+                let q = self.search_query.to_lowercase();
+                d.display_name().to_lowercase().contains(&q) || addr.to_lowercase().contains(&q)
+            }
         }
-        let pattern = if mode == SearchMode::Smart {
-            // Strip the leading `/` for smart mode.
-            &self.search_query[1..]
+    }
+
+    /// Re-sort, re-filter and re-group the list, keeping the selection on the
+    /// same device (or its neighbour if it disappeared).
+    pub fn refresh_rows(&mut self) {
+        let prev_row = self.selected_row().or(self.list_state.selected());
+        self.sort_devices();
+
+        let visible: Vec<usize> = (0..self.devices.len())
+            .filter(|&i| self.matches(&self.devices[i]))
+            .collect();
+
+        self.rows.clear();
+        if self.sort_mode == SortMode::Default {
+            let (mine, nearby): (Vec<usize>, Vec<usize>) = visible
+                .into_iter()
+                .partition(|&i| self.devices[i].is_known());
+            for (section, group) in [(Section::Mine, mine), (Section::Nearby, nearby)] {
+                if !group.is_empty() {
+                    self.rows.push(Row::Header(section, group.len()));
+                    self.rows.extend(group.into_iter().map(Row::Device));
+                }
+            }
         } else {
-            &self.search_query
-        };
-        if pattern.is_empty() {
-            return None;
+            self.rows.extend(visible.into_iter().map(Row::Device));
         }
-        // Case-insensitive by default.
-        Regex::new(&format!("(?i){pattern}")).ok()
-    }
 
-    /// Lightweight count without allocating a filtered Vec.
-    pub fn filtered_count(&self) -> usize {
-        self.cached_filter_count
-    }
-
-    /// Push an error popup onto the stack.
-    pub fn push_error(&mut self, message: String) {
-        self.active_popup = Some(Popup::Error {
-            message,
-            slide: 0.0,
-        });
+        if self.selected_row().is_none() {
+            // Pick the device row closest to where the cursor was.
+            let target = prev_row.unwrap_or(0);
+            let device_rows = self.rows.iter().enumerate().filter_map(|(ri, r)| match r {
+                Row::Device(i) => Some((ri, *i)),
+                Row::Header(..) => None,
+            });
+            self.selected = device_rows
+                .min_by_key(|(ri, _)| ri.abs_diff(target))
+                .map(|(_, i)| self.devices[i].address);
+        }
+        self.list_state.select(self.selected_row());
         self.dirty = true;
     }
 
-    /// The currently selected device (if any).
-    pub fn selected_device(&self) -> Option<&DeviceInfo> {
-        let filtered = self.filtered_devices();
-        filtered.get(self.selected_index).copied()
+    /// Move the cursor by `delta` devices (headers are skipped).
+    fn move_selection(&mut self, delta: isize) {
+        let device_rows: Vec<usize> = self
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Device(i) => Some(*i),
+                Row::Header(..) => None,
+            })
+            .collect();
+        if device_rows.is_empty() {
+            return;
+        }
+        let current = self
+            .selected
+            .and_then(|a| {
+                device_rows
+                    .iter()
+                    .position(|&i| self.devices[i].address == a)
+            })
+            .unwrap_or(0);
+        let last = device_rows.len() - 1;
+        let next = current.saturating_add_signed(delta).min(last);
+        self.selected = Some(self.devices[device_rows[next]].address);
+        self.list_state.select(self.selected_row());
     }
 
-    /// Clamp `selected_index` to valid bounds.
-    fn clamp_selection(&mut self) {
-        let len = self.filtered_devices().len();
-        if len == 0 {
-            self.selected_index = 0;
-        } else if self.selected_index >= len {
-            self.selected_index = len - 1;
+    fn select_edge(&mut self, last: bool) {
+        self.move_selection(if last { isize::MAX / 2 } else { isize::MIN / 2 });
+    }
+
+    // ── Search ──────────────────────────────────────────────────────────
+
+    fn regex_requested(&self) -> bool {
+        match config::get().general.search_mode {
+            SearchMode::Regex => true,
+            SearchMode::Smart => self.search_query.starts_with('/'),
+            SearchMode::Plain => false,
         }
     }
 
-    // ── Tick handling ───────────────────────────────────────────────────
+    fn update_search(&mut self) {
+        self.search_regex = None;
+        self.search_error = None;
+        if self.regex_requested() {
+            let pattern = match config::get().general.search_mode {
+                SearchMode::Smart => &self.search_query[1..],
+                _ => self.search_query.as_str(),
+            };
+            if !pattern.is_empty() {
+                match Regex::new(&format!("(?i){pattern}")) {
+                    Ok(re) => self.search_regex = Some(re),
+                    Err(_) => self.search_error = Some("invalid regex".into()),
+                }
+            }
+        }
+        self.refresh_rows();
+    }
 
-    /// Called on every animation tick (~60 Hz).
+    fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.update_search();
+    }
+
+    // ── Notifications ───────────────────────────────────────────────────
+
+    pub fn toast(&mut self, kind: ToastKind, message: impl Into<String>) {
+        let n = &config::get().notifications;
+        let ms = match kind {
+            ToastKind::Error => n.error_duration_ms,
+            ToastKind::Success | ToastKind::Info => n.success_duration_ms,
+        };
+        let message = message.into();
+        // Replace an identical toast instead of stacking duplicates.
+        self.toasts.retain(|t| t.message != message);
+        self.toasts.push_back(Toast {
+            kind,
+            message,
+            shown: Instant::now(),
+            ttl: Duration::from_millis(ms),
+        });
+        while self.toasts.len() > MAX_TOASTS {
+            self.toasts.pop_front();
+        }
+        self.dirty = true;
+    }
+
+    // ── Ticks ───────────────────────────────────────────────────────────
+
     pub fn on_tick(&mut self) {
-        self.tick_count = self.tick_count.wrapping_add(1);
+        let before = self.toasts.len();
+        self.toasts.retain(|t| t.shown.elapsed() < t.ttl);
+        if self.toasts.len() != before {
+            self.dirty = true;
+        }
 
-        // Update cached filter count (cheap: reuses existing filter logic).
-        self.cached_filter_count = self.filtered_devices().len();
-
-        // Animate popup slide-in.
-        if let Some(popup) = &mut self.active_popup {
-            if let Some(slide) = popup.slide_mut() {
-                if *slide < 1.0 {
-                    let speed = crate::config::get().notifications.slide_speed;
-                    *slide = (*slide + speed).min(1.0);
-                    self.dirty = true;
-                }
+        // BlueZ cancelled or timed out the request we are showing.
+        if let Some(Modal::Prompt(p)) = &self.modal {
+            if p.reply.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                self.modal = None;
+                self.toast(ToastKind::Info, "Pairing request cancelled");
             }
         }
 
-        // Auto-dismiss transient popups.
-        if let Some(ttl) = &mut self.popup_ttl {
-            if *ttl == 0 {
-                self.active_popup = None;
-                self.popup_ttl = None;
-                if self.input_mode == InputMode::Dialog {
-                    self.input_mode = InputMode::Normal;
-                }
-                self.dirty = true;
-            } else {
-                *ttl -= 1;
-            }
-        }
-
-        // Scanning spinner needs continuous redraws.
-        if self.scanning || !self.pending_ops.is_empty() {
+        if self.is_animating() {
             self.dirty = true;
         }
     }
 
-    // ── Bluetooth event handling ────────────────────────────────────────
+    // ── Bluetooth events ────────────────────────────────────────────────
 
-    /// Apply a Bluetooth event from the worker to the app state.
     pub fn handle_bt_event(&mut self, event: BtEvent) {
         self.dirty = true;
         match event {
+            BtEvent::Ready => {
+                if matches!(self.status, BtStatus::Unavailable(_)) {
+                    self.toast(ToastKind::Success, "Bluetooth is back");
+                }
+                self.status = BtStatus::Ready;
+            }
+            BtEvent::Unavailable(msg) => {
+                self.status = BtStatus::Unavailable(msg);
+                self.devices.clear();
+                self.pending.clear();
+                self.scanning = false;
+                self.adapter = AdapterInfo::default();
+                if matches!(
+                    self.modal,
+                    Some(Modal::Prompt(_) | Modal::PairingCode { .. })
+                ) {
+                    self.modal = None;
+                }
+                self.refresh_rows();
+            }
             BtEvent::AdapterState(info) => {
                 self.adapter = info;
             }
-
-            BtEvent::DeviceFound(info) => {
-                if let Some(existing) = self.devices.iter_mut().find(|d| d.address == info.address)
-                {
-                    *existing = info;
-                } else {
-                    self.devices.push(info);
-                }
-                self.sort_devices();
-                self.clamp_selection();
-            }
-
             BtEvent::DeviceUpdated(info) => {
-                if !info.connected {
-                    if self.pending_ops.get(&info.address) == Some(&PendingOperation::Disconnecting)
-                    {
-                        self.pending_ops.remove(&info.address);
-                    }
+                match self.devices.iter_mut().find(|d| d.address == info.address) {
+                    Some(existing) => *existing = info,
+                    None => self.devices.push(info),
                 }
-                if let Some(existing) = self.devices.iter_mut().find(|d| d.address == info.address)
-                {
-                    *existing = info;
-                } else {
-                    self.devices.push(info);
-                }
-                self.sort_devices();
-                self.clamp_selection();
+                self.refresh_rows();
             }
-
             BtEvent::DeviceRemoved(addr) => {
-                self.pending_ops.remove(&addr);
                 self.devices.retain(|d| d.address != addr);
-                self.clamp_selection();
+                self.pending.remove(&addr);
+                self.refresh_rows();
             }
+            BtEvent::OpFinished { address, op, error } => self.op_finished(address, op, error),
+            BtEvent::PairingCode { address, code } => {
+                self.leave_text_mode();
+                self.modal = Some(Modal::PairingCode { address, code });
+            }
+            BtEvent::AgentRequest(req) => self.open_prompt(req),
+            BtEvent::ScanningChanged(scanning) => self.scanning = scanning,
+            BtEvent::Error(msg) => self.toast(ToastKind::Error, msg),
+        }
+    }
 
-            BtEvent::ConnectionResult {
-                address,
-                success,
-                error,
-            } => {
-                self.pending_ops.remove(&address);
-                let message = if success {
-                    format!("Connected to {address}")
-                } else {
-                    format!(
-                        "Connection failed: {}",
-                        error.as_deref().unwrap_or("unknown error")
-                    )
+    fn op_finished(&mut self, address: Address, op: Operation, error: Option<String>) {
+        if self.pending.get(&address) == Some(&op) {
+            self.pending.remove(&address);
+        }
+        if matches!(self.modal, Some(Modal::PairingCode { address: a, .. }) if a == address) {
+            self.modal = None;
+        }
+        let name = self.name_of(address);
+        match error {
+            Some(err) => self.toast(
+                ToastKind::Error,
+                format!("Couldn't {} {name}: {err}", op.verb()),
+            ),
+            None => {
+                let msg = match op {
+                    Operation::Connect => format!("Connected to {name}"),
+                    Operation::Disconnect => format!("Disconnected {name}"),
+                    Operation::Pair => format!("Paired with {name}"),
+                    Operation::Remove => format!("Forgot {name}"),
+                    Operation::Rename => format!("Renamed to {name}"),
+                    Operation::Trust => {
+                        let trusted = self.device(address).is_some_and(|d| d.trusted);
+                        if trusted {
+                            format!("{name} is now trusted")
+                        } else {
+                            format!("{name} is no longer trusted")
+                        }
+                    }
                 };
-                self.show_transient_popup(Popup::ConnectionResult {
-                    address,
-                    success,
-                    message,
-                    slide: 0.0,
-                });
-            }
-
-            BtEvent::PairResult {
-                address,
-                success,
-                error,
-            } => {
-                self.pending_ops.remove(&address);
-                if !success {
-                    let message = format!(
-                        "Pairing failed: {}",
-                        error.as_deref().unwrap_or("unknown error")
-                    );
-                    self.show_transient_popup(Popup::Error {
-                        message,
-                        slide: 0.0,
-                    });
-                }
-            }
-
-            BtEvent::PinRequest { address, pin } => {
-                self.active_popup = Some(Popup::PinDisplay {
-                    address,
-                    pin,
-                    slide: 0.0,
-                });
-                self.input_mode = InputMode::Dialog;
-                self.popup_ttl = None;
-            }
-
-            BtEvent::ScanningChanged(scanning) => {
-                self.scanning = scanning;
-            }
-
-            BtEvent::Error(msg) => {
-                self.show_transient_popup(Popup::Error {
-                    message: msg,
-                    slide: 0.0,
-                });
+                self.toast(ToastKind::Success, msg);
             }
         }
     }
 
-    /// Show a transient popup with timeout tuned to message severity.
-    fn show_transient_popup(&mut self, popup: Popup) {
-        let notif = &crate::config::get().notifications;
-        let tick_ms = crate::config::get().general.tick_rate_ms.max(1);
-
-        let duration_ms = match &popup {
-            Popup::ConnectionResult { success: true, .. } => notif.success_duration_ms,
-            Popup::ConnectionResult { success: false, .. } | Popup::Error { .. } => {
-                notif.error_duration_ms
-            }
-            Popup::PinDisplay { .. } | Popup::Help => notif.success_duration_ms,
-        };
-
-        self.active_popup = Some(popup);
-        self.input_mode = InputMode::Dialog;
-        self.popup_ttl = Some(duration_ms / tick_ms);
-    }
-
-    /// Re-sort devices by the active sort mode.
-    fn sort_devices(&mut self) {
-        match self.sort_mode {
-            SortMode::Default => self.devices.sort_by_key(|d| d.sort_key()),
-            SortMode::Name => self.devices.sort_by(|a, b| {
-                a.display_name()
-                    .to_lowercase()
-                    .cmp(&b.display_name().to_lowercase())
-            }),
-            SortMode::Rssi => {
-                // Strongest signal (closest to 0) first.
-                self.devices.sort_by(|a, b| {
-                    let ra = a.rssi.unwrap_or(i16::MIN);
-                    let rb = b.rssi.unwrap_or(i16::MIN);
-                    rb.cmp(&ra)
-                });
-            }
-            SortMode::Address => {
-                self.devices.sort_by(|a, b| a.address.cmp(&b.address));
-            }
+    fn open_prompt(&mut self, req: AgentRequest) {
+        if matches!(self.modal, Some(Modal::Prompt(_))) {
+            // One question at a time; dropping `req.reply` rejects this one.
+            return;
         }
+        self.leave_text_mode();
+        self.modal = Some(Modal::Prompt(Prompt {
+            address: req.address,
+            kind: req.kind,
+            reply: Some(req.reply),
+            input: String::new(),
+            error: None,
+            opened: Instant::now(),
+        }));
     }
 
-    // ── Input handling ──────────────────────────────────────────────────
+    fn leave_text_mode(&mut self) {
+        if self.mode == Mode::Rename {
+            self.rename_target = None;
+            self.rename_buffer.clear();
+        }
+        self.mode = Mode::Normal;
+    }
 
-    /// Process a key event and return an action for the main loop.
-    pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
+    // ── Keyboard ────────────────────────────────────────────────────────
+
+    /// Process a key press. Returns a command for the worker, if any.
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<BtCommand> {
         self.dirty = true;
-        match self.input_mode {
-            InputMode::Normal => self.handle_normal_key(key),
-            InputMode::Search => self.handle_search_key(key),
-            InputMode::Dialog => self.handle_dialog_key(key),
-            InputMode::Rename => self.handle_rename_key(key),
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(Modal::Prompt(p)) = &mut self.modal {
+                if let Some(reply) = p.reply.take() {
+                    let _ = reply.send(AgentReply::Reject);
+                }
+            }
+            self.running = false;
+            return None;
+        }
+        if self.modal.is_some() {
+            return self.handle_modal_key(key);
+        }
+        match self.mode {
+            Mode::Normal => self.handle_normal_key(key),
+            Mode::Search => {
+                self.handle_search_key(key);
+                None
+            }
+            Mode::Rename => self.handle_rename_key(key),
         }
     }
 
-    fn handle_normal_key(&mut self, key: KeyEvent) -> AppAction {
-        let kb = &crate::config::get().keys;
-
-        // Ctrl+C always quits (system convention, non-configurable).
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return AppAction::Quit;
+    /// Start a device operation, unless one is already running for it.
+    fn start_op(&mut self, addr: Address, op: Operation, cmd: BtCommand) -> Option<BtCommand> {
+        if let Some(running) = self.pending.get(&addr) {
+            let msg = format!(
+                "{} {}… please wait",
+                running.progress_label(),
+                self.name_of(addr)
+            );
+            self.toast(ToastKind::Info, msg);
+            return None;
         }
+        self.pending.insert(addr, op);
+        Some(cmd)
+    }
 
-        match key.code {
-            // ── Quit ────────────────────────────────────────────────────
-            c if c == kb.quit => AppAction::Quit,
+    fn handle_normal_key(&mut self, key: KeyEvent) -> Option<BtCommand> {
+        let kb = &config::get().keys;
+        let code = key.code;
 
-            // ── Navigation ──────────────────────────────────────────────
-            c if c == kb.nav_down || c == KeyCode::Down => {
-                let len = self.filtered_devices().len();
-                if len > 0 {
-                    self.selected_index = (self.selected_index + 1).min(len - 1);
-                }
-                AppAction::Consumed
+        // Navigation and UI-only keys work even while Bluetooth is down.
+        match code {
+            c if c == kb.quit => {
+                self.running = false;
+                return None;
             }
-            c if c == kb.nav_up || c == KeyCode::Up => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                }
-                AppAction::Consumed
-            }
-            c if c == kb.jump_top => {
-                self.selected_index = 0;
-                AppAction::Consumed
-            }
-            c if c == kb.jump_bottom => {
-                let len = self.filtered_devices().len();
-                if len > 0 {
-                    self.selected_index = len - 1;
-                }
-                AppAction::Consumed
-            }
-
-            // ── Search ──────────────────────────────────────────────────
-            c if c == kb.search => {
-                self.input_mode = InputMode::Search;
-                self.search_query.clear();
-                self.search_error.clear();
-                AppAction::Consumed
-            }
-
-            // ── Help ────────────────────────────────────────────────────
-            c if c == kb.help => {
-                self.active_popup = Some(Popup::Help);
-                self.input_mode = InputMode::Dialog;
-                self.popup_ttl = None;
-                AppAction::Consumed
-            }
-
-            // ── Sort mode cycle ─────────────────────────────────────────
+            c if c == kb.nav_down || c == KeyCode::Down => self.move_selection(1),
+            c if c == kb.nav_up || c == KeyCode::Up => self.move_selection(-1),
+            c if c == kb.jump_top || c == KeyCode::Home => self.select_edge(false),
+            c if c == kb.jump_bottom || c == KeyCode::End => self.select_edge(true),
+            KeyCode::PageDown => self.move_selection(PAGE),
+            KeyCode::PageUp => self.move_selection(-PAGE),
+            c if c == kb.help => self.modal = Some(Modal::Help),
+            c if c == kb.search => self.mode = Mode::Search,
             c if c == kb.cycle_sort => {
                 self.sort_mode = self.sort_mode.next();
-                self.sort_devices();
-                self.clamp_selection();
-                AppAction::Consumed
+                self.refresh_rows();
+                self.toast(
+                    ToastKind::Info,
+                    format!("Sorted by {}", self.sort_mode.label()),
+                );
             }
-
-            // ── Rename device ───────────────────────────────────────────
-            c if c == kb.rename => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    let alias = device.alias.clone();
-                    self.rename_target = Some(addr);
-                    self.rename_buffer = alias;
-                    self.input_mode = InputMode::Rename;
-                }
-                AppAction::Consumed
-            }
-
-            // ── Adapter controls ────────────────────────────────────────
-            c if c == kb.toggle_adapter => {
-                if self.adapter.powered {
-                    AppAction::BtCommand(BtCommand::DisableAdapter)
+            KeyCode::Esc => {
+                if self.filter_active() {
+                    self.clear_search();
                 } else {
-                    AppAction::BtCommand(BtCommand::EnableAdapter)
+                    self.toasts.clear();
                 }
             }
-            c if c == kb.toggle_scan => {
-                if self.scanning {
-                    AppAction::BtCommand(BtCommand::StopScan)
-                } else {
-                    AppAction::BtCommand(BtCommand::StartScan)
-                }
-            }
+            _ => return self.handle_bluetooth_key(code),
+        }
+        None
+    }
 
-            // ── Device actions ──────────────────────────────────────────
+    fn handle_bluetooth_key(&mut self, code: KeyCode) -> Option<BtCommand> {
+        let kb = &config::get().keys;
+        let device_keys = [
+            kb.connect_toggle,
+            kb.disconnect,
+            kb.pair,
+            kb.trust,
+            kb.remove,
+            kb.refresh,
+            kb.rename,
+        ];
+        let is_bt_key =
+            code == kb.toggle_adapter || code == kb.toggle_scan || device_keys.contains(&code);
+        if !is_bt_key {
+            self.dirty = false;
+            return None;
+        }
+        if let BtStatus::Unavailable(msg) = &self.status {
+            let msg = msg.clone();
+            self.toast(ToastKind::Error, msg);
+            return None;
+        }
+        if !self.is_ready() {
+            return None;
+        }
+
+        if code == kb.toggle_adapter {
+            return Some(if self.adapter.powered {
+                BtCommand::DisableAdapter
+            } else {
+                BtCommand::EnableAdapter
+            });
+        }
+        if code == kb.toggle_scan {
+            return Some(if self.scanning {
+                BtCommand::StopScan
+            } else {
+                BtCommand::StartScan
+            });
+        }
+
+        // Everything below acts on the selected device.
+        let Some(device) = self.selected_device().cloned() else {
+            let hint = if self.devices.is_empty() {
+                format!(
+                    "No devices yet. Press {} to scan",
+                    config::key_label(kb.toggle_scan)
+                )
+            } else {
+                "Select a device first".into()
+            };
+            self.toast(ToastKind::Info, hint);
+            return None;
+        };
+        if !self.adapter.powered {
+            let msg = format!(
+                "Bluetooth is off. Press {} to turn it on",
+                config::key_label(kb.toggle_adapter)
+            );
+            self.toast(ToastKind::Info, msg);
+            return None;
+        }
+        let addr = device.address;
+
+        match code {
             c if c == kb.connect_toggle => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    if device.connected {
-                        self.pending_ops
-                            .insert(addr, PendingOperation::Disconnecting);
-                        AppAction::BtCommand(BtCommand::Disconnect(addr))
-                    } else {
-                        self.pending_ops.insert(addr, PendingOperation::Connecting);
-                        AppAction::BtCommand(BtCommand::Connect(addr))
-                    }
+                if device.connected {
+                    self.start_op(addr, Operation::Disconnect, BtCommand::Disconnect(addr))
                 } else {
-                    AppAction::Consumed
+                    self.start_op(addr, Operation::Connect, BtCommand::Connect(addr))
                 }
             }
             c if c == kb.disconnect => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    self.pending_ops
-                        .insert(addr, PendingOperation::Disconnecting);
-                    AppAction::BtCommand(BtCommand::Disconnect(addr))
+                if device.connected {
+                    self.start_op(addr, Operation::Disconnect, BtCommand::Disconnect(addr))
                 } else {
-                    AppAction::Consumed
+                    self.toast(
+                        ToastKind::Info,
+                        format!("{} isn't connected", device.display_name()),
+                    );
+                    None
                 }
             }
             c if c == kb.pair => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    self.pending_ops.insert(addr, PendingOperation::Pairing);
-                    AppAction::BtCommand(BtCommand::Pair(addr))
+                if device.paired {
+                    self.toast(
+                        ToastKind::Info,
+                        format!("{} is already paired", device.display_name()),
+                    );
+                    None
                 } else {
-                    AppAction::Consumed
+                    self.start_op(addr, Operation::Pair, BtCommand::Pair(addr))
                 }
             }
             c if c == kb.trust => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    AppAction::BtCommand(BtCommand::Trust(addr))
-                } else {
-                    AppAction::Consumed
-                }
+                self.start_op(addr, Operation::Trust, BtCommand::ToggleTrust(addr))
             }
             c if c == kb.remove => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    self.pending_ops.insert(addr, PendingOperation::Removing);
-                    AppAction::BtCommand(BtCommand::RemoveDevice(addr))
-                } else {
-                    AppAction::Consumed
-                }
+                self.modal = Some(Modal::ConfirmRemove(addr));
+                None
             }
-            c if c == kb.refresh => {
-                if let Some(device) = self.selected_device() {
-                    let addr = device.address;
-                    AppAction::BtCommand(BtCommand::RefreshDevice(addr))
-                } else {
-                    AppAction::Consumed
-                }
+            c if c == kb.refresh => Some(BtCommand::RefreshDevice(addr)),
+            c if c == kb.rename => {
+                self.rename_target = Some(addr);
+                self.rename_buffer = device.display_name().to_string();
+                self.mode = Mode::Rename;
+                None
             }
-
-            _ => {
-                self.dirty = false; // Unknown key — no visual change.
-                AppAction::Consumed
-            }
+            _ => None,
         }
     }
 
-    fn handle_search_key(&mut self, key: KeyEvent) -> AppAction {
+    fn handle_search_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                self.input_mode = InputMode::Normal;
-                self.search_query.clear();
-                self.search_error.clear();
-                self.clamp_selection();
-                AppAction::Consumed
+                self.mode = Mode::Normal;
+                self.clear_search();
             }
-            KeyCode::Enter => {
-                self.input_mode = InputMode::Normal;
-                self.clamp_selection();
-                AppAction::Consumed
-            }
+            KeyCode::Enter => self.mode = Mode::Normal,
+            KeyCode::Down => self.move_selection(1),
+            KeyCode::Up => self.move_selection(-1),
             KeyCode::Backspace => {
                 self.search_query.pop();
-                self.validate_search_regex();
-                self.selected_index = 0;
-                AppAction::Consumed
+                self.update_search();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.clear_search();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.search_query.push(c);
-                self.validate_search_regex();
-                self.selected_index = 0;
-                AppAction::Consumed
+                self.update_search();
             }
-            _ => AppAction::Consumed,
+            _ => {}
         }
     }
 
-    fn handle_dialog_key(&mut self, key: KeyEvent) -> AppAction {
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                self.active_popup = None;
-                self.popup_ttl = None;
-                self.input_mode = InputMode::Normal;
-                AppAction::Consumed
-            }
-            _ => AppAction::Consumed,
-        }
-    }
-
-    fn handle_rename_key(&mut self, key: KeyEvent) -> AppAction {
+    fn handle_rename_key(&mut self, key: KeyEvent) -> Option<BtCommand> {
         match key.code {
             KeyCode::Esc => {
-                self.input_mode = InputMode::Normal;
-                self.rename_buffer.clear();
-                self.rename_target = None;
-                AppAction::Consumed
+                self.leave_text_mode();
+                None
             }
             KeyCode::Enter => {
-                let action = if let Some(addr) = self.rename_target.take() {
-                    if !self.rename_buffer.trim().is_empty() {
-                        let new_alias = self.rename_buffer.trim().to_string();
-                        AppAction::BtCommand(BtCommand::SetAlias(addr, new_alias))
-                    } else {
-                        AppAction::Consumed
-                    }
-                } else {
-                    AppAction::Consumed
-                };
-                self.input_mode = InputMode::Normal;
-                self.rename_buffer.clear();
-                action
+                let target = self.rename_target.take();
+                let alias = self.rename_buffer.trim().to_string();
+                self.leave_text_mode();
+                let addr = target?;
+                if alias.is_empty() || self.device(addr).is_some_and(|d| d.display_name() == alias)
+                {
+                    return None;
+                }
+                self.start_op(addr, Operation::Rename, BtCommand::SetAlias(addr, alias))
             }
             KeyCode::Backspace => {
                 self.rename_buffer.pop();
-                AppAction::Consumed
+                None
             }
-            KeyCode::Char(c) => {
-                self.rename_buffer.push(c);
-                AppAction::Consumed
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.rename_buffer.clear();
+                None
             }
-            _ => AppAction::Consumed,
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.rename_buffer.chars().count() < 64 {
+                    self.rename_buffer.push(c);
+                }
+                None
+            }
+            _ => None,
         }
     }
 
-    /// Validate the current search query as regex and store any error.
-    fn validate_search_regex(&mut self) {
-        let mode = crate::config::get().general.search_mode;
-        let use_regex = match mode {
-            SearchMode::Regex => true,
-            SearchMode::Smart => self.search_query.starts_with('/'),
-            SearchMode::Plain => false,
+    fn handle_modal_key(&mut self, key: KeyEvent) -> Option<BtCommand> {
+        let kb = &config::get().keys;
+        let yes = matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y'));
+        let no = matches!(key.code, KeyCode::Esc | KeyCode::Char('n' | 'N'));
+
+        match self.modal.as_mut()? {
+            Modal::Help => {
+                if no || key.code == KeyCode::Enter || key.code == kb.help || key.code == kb.quit {
+                    self.modal = None;
+                }
+                None
+            }
+            Modal::PairingCode { .. } => {
+                if no || key.code == KeyCode::Enter {
+                    self.modal = None;
+                }
+                None
+            }
+            Modal::ConfirmRemove(addr) => {
+                let addr = *addr;
+                if yes {
+                    self.modal = None;
+                    self.start_op(addr, Operation::Remove, BtCommand::RemoveDevice(addr))
+                } else {
+                    if no {
+                        self.modal = None;
+                    }
+                    None
+                }
+            }
+            Modal::Prompt(p) if p.needs_input() => {
+                match key.code {
+                    KeyCode::Esc => self.answer_prompt(AgentReply::Reject),
+                    KeyCode::Enter => {
+                        let valid = match p.kind {
+                            PromptKind::EnterPasskey => agent::parse_passkey(&p.input).is_some(),
+                            _ => agent::parse_pin(&p.input).is_some(),
+                        };
+                        if valid {
+                            let text = p.input.clone();
+                            self.answer_prompt(AgentReply::Text(text));
+                        } else {
+                            p.error = Some(match p.kind {
+                                PromptKind::EnterPasskey => "Enter up to 6 digits".into(),
+                                _ => "Enter 1–16 letters or digits".into(),
+                            });
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        p.input.pop();
+                        p.error = None;
+                    }
+                    KeyCode::Char(c) => {
+                        let limit = if p.kind == PromptKind::EnterPasskey {
+                            6
+                        } else {
+                            16
+                        };
+                        let ok = if p.kind == PromptKind::EnterPasskey {
+                            c.is_ascii_digit()
+                        } else {
+                            c.is_ascii_graphic()
+                        };
+                        if ok && p.input.len() < limit {
+                            p.input.push(c);
+                            p.error = None;
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Modal::Prompt(_) => {
+                if yes {
+                    self.answer_prompt(AgentReply::Accept);
+                } else if no {
+                    self.answer_prompt(AgentReply::Reject);
+                }
+                None
+            }
+        }
+    }
+
+    fn answer_prompt(&mut self, answer: AgentReply) {
+        if let Some(Modal::Prompt(mut p)) = self.modal.take() {
+            if let Some(reply) = p.reply.take() {
+                let _ = reply.send(answer);
+            }
+        }
+    }
+
+    // ── Mouse ───────────────────────────────────────────────────────────
+
+    /// Process a mouse event. Returns a command for the worker, if any.
+    pub fn handle_mouse(&mut self, ev: MouseEvent) -> Option<BtCommand> {
+        if self.modal.is_some() {
+            return None;
+        }
+        match ev.kind {
+            MouseEventKind::ScrollDown => {
+                self.move_selection(1);
+                self.dirty = true;
+                None
+            }
+            MouseEventKind::ScrollUp => {
+                self.move_selection(-1);
+                self.dirty = true;
+                None
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let area = self.list_area;
+                let inside = ev.column >= area.x
+                    && ev.column < area.x + area.width
+                    && ev.row >= area.y
+                    && ev.row < area.y + area.height;
+                if !inside {
+                    return None;
+                }
+                let row = self.list_state.offset() + usize::from(ev.row - area.y);
+                let Some(Row::Device(i)) = self.rows.get(row).copied() else {
+                    return None;
+                };
+                let addr = self.devices[i].address;
+                self.selected = Some(addr);
+                self.list_state.select(Some(row));
+                self.dirty = true;
+
+                let double = self
+                    .last_click
+                    .is_some_and(|(t, a)| a == addr && t.elapsed() < DOUBLE_CLICK);
+                self.last_click = Some((Instant::now(), addr));
+                if double {
+                    self.last_click = None;
+                    return self.handle_bluetooth_key(config::get().keys.connect_toggle);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEventKind;
+
+    fn setup() -> App {
+        config::init_for_tests();
+        let mut app = App::new();
+        app.handle_bt_event(BtEvent::Ready);
+        app.handle_bt_event(BtEvent::AdapterState(AdapterInfo {
+            powered: true,
+            ..AdapterInfo::default()
+        }));
+        app
+    }
+
+    fn dev(n: u8, name: &str, rssi: i16, paired: bool) -> DeviceInfo {
+        let mut d = DeviceInfo::new(Address::new([0, 0, 0, 0, 0, n]));
+        d.name = Some(name.into());
+        d.alias = name.into();
+        d.rssi = Some(rssi);
+        d.paired = paired;
+        d
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Option<BtCommand> {
+        app.handle_key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        })
+    }
+
+    #[test]
+    fn jump_keys_reach_both_ends() {
+        let mut app = setup();
+        for (n, name) in [(1, "A"), (2, "B"), (3, "C")] {
+            app.handle_bt_event(BtEvent::DeviceUpdated(dev(
+                n,
+                name,
+                -40 - i16::from(n),
+                false,
+            )));
+        }
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.selected_device().unwrap().alias, "C");
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.selected_device().unwrap().alias, "A");
+    }
+
+    #[test]
+    fn prompt_countdown_starts_near_timeout() {
+        let mut app = setup();
+        let (tx, _rx) = oneshot::channel();
+        app.handle_bt_event(BtEvent::AgentRequest(AgentRequest {
+            address: Address::new([9; 6]),
+            kind: PromptKind::Authorize,
+            reply: tx,
+        }));
+        let Some(Modal::Prompt(p)) = &app.modal else {
+            panic!("no prompt")
         };
-        if !use_regex || self.search_query.is_empty() {
-            self.search_error.clear();
-            return;
+        assert!(p.seconds_left() >= 22, "{}", p.seconds_left());
+    }
+
+    #[test]
+    fn groups_known_devices_first() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "Speaker", -40, false)));
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(2, "Headphones", -80, true)));
+        assert_eq!(app.rows[0], Row::Header(Section::Mine, 1));
+        assert_eq!(app.rows[2], Row::Header(Section::Nearby, 1));
+        assert_eq!(app.visible_count(), 2);
+    }
+
+    #[test]
+    fn selection_follows_device_across_resorts() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "A", -40, false)));
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(2, "B", -50, false)));
+        press(&mut app, KeyCode::Char('j'));
+        let chosen = app.selected.unwrap();
+        assert_eq!(app.name_of(chosen), "B");
+        // B's signal gets stronger, so it sorts above A.
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(2, "B", -30, false)));
+        assert_eq!(app.selected, Some(chosen));
+        let cmd = press(&mut app, KeyCode::Enter);
+        assert_eq!(cmd, Some(BtCommand::Connect(chosen)));
+    }
+
+    #[test]
+    fn failed_operation_clears_spinner_and_reports() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "Buds", -40, false)));
+        let addr = app.selected.unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.pending.get(&addr), Some(&Operation::Connect));
+        // A second Enter while busy doesn't send another command.
+        assert_eq!(press(&mut app, KeyCode::Enter), None);
+        app.handle_bt_event(BtEvent::OpFinished {
+            address: addr,
+            op: Operation::Connect,
+            error: Some("nope".into()),
+        });
+        assert!(app.pending.is_empty());
+        assert!(app
+            .toasts
+            .back()
+            .unwrap()
+            .message
+            .contains("Couldn't connect to Buds"));
+    }
+
+    #[test]
+    fn toasts_do_not_block_keys() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "A", -40, false)));
+        app.handle_bt_event(BtEvent::Error("boom".into()));
+        assert!(press(&mut app, KeyCode::Char('s')).is_some());
+    }
+
+    #[test]
+    fn remove_asks_for_confirmation() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "A", -40, true)));
+        let addr = app.selected.unwrap();
+        assert_eq!(press(&mut app, KeyCode::Char('r')), None);
+        assert!(matches!(app.modal, Some(Modal::ConfirmRemove(_))));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            Some(BtCommand::RemoveDevice(addr))
+        );
+    }
+
+    #[test]
+    fn pairing_prompt_waits_for_user() {
+        let mut app = setup();
+        let (tx, mut rx) = oneshot::channel();
+        app.handle_bt_event(BtEvent::AgentRequest(AgentRequest {
+            address: Address::new([9; 6]),
+            kind: PromptKind::Confirm { passkey: 123_456 },
+            reply: tx,
+        }));
+        // Unrelated keys don't answer it.
+        press(&mut app, KeyCode::Char('s'));
+        assert!(rx.try_recv().is_err());
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(rx.try_recv().unwrap(), AgentReply::Accept);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn passkey_prompt_validates_input() {
+        let mut app = setup();
+        let (tx, mut rx) = oneshot::channel();
+        app.handle_bt_event(BtEvent::AgentRequest(AgentRequest {
+            address: Address::new([9; 6]),
+            kind: PromptKind::EnterPasskey,
+            reply: tx,
+        }));
+        press(&mut app, KeyCode::Enter);
+        assert!(rx.try_recv().is_err(), "empty passkey must not be sent");
+        for c in "12x34".chars() {
+            press(&mut app, KeyCode::Char(c));
         }
-        let pattern = if mode == SearchMode::Smart {
-            &self.search_query[1..]
-        } else {
-            &self.search_query
-        };
-        if pattern.is_empty() {
-            self.search_error.clear();
-            return;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(rx.try_recv().unwrap(), AgentReply::Text("1234".into()));
+    }
+
+    #[test]
+    fn search_filters_and_esc_restores() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "Keyboard", -40, false)));
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(2, "Mouse", -50, false)));
+        press(&mut app, KeyCode::Char('/'));
+        for c in "mou".chars() {
+            press(&mut app, KeyCode::Char(c));
         }
-        match Regex::new(&format!("(?i){pattern}")) {
-            Ok(_) => self.search_error.clear(),
-            Err(e) => self.search_error = format!("regex: {e}"),
+        assert_eq!(app.visible_count(), 1);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.visible_count(), 1, "filter stays after Enter");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.visible_count(), 2);
+    }
+
+    #[test]
+    fn invalid_regex_does_not_hide_everything() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::DeviceUpdated(dev(1, "Keyboard", -40, false)));
+        press(&mut app, KeyCode::Char('/'));
+        for c in "/[".chars() {
+            press(&mut app, KeyCode::Char(c));
         }
+        assert!(app.search_error.is_some());
+        assert_eq!(app.visible_count(), 1);
+    }
+
+    #[test]
+    fn unavailable_bluetooth_explains_instead_of_sending() {
+        let mut app = setup();
+        app.handle_bt_event(BtEvent::Unavailable("service down".into()));
+        assert_eq!(press(&mut app, KeyCode::Char('s')), None);
+        assert_eq!(app.toasts.back().unwrap().message, "service down");
     }
 }
