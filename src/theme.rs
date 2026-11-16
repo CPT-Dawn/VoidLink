@@ -1,255 +1,327 @@
-//! "Cosmic Dawn" palette, animation easing, and Nerd Font icon mappings.
+//! "Cosmic Dawn" palette, glyphs, and small animation helpers.
 //!
-//! All colors are resolved from the user's config at startup.  Style
-//! functions read from the global `config::get()` singleton — the only
-//! overhead is a pointer dereference per call.
+//! All colours come from the user's config. No style sets a background, so
+//! translucent / blurred terminals keep showing through.
 //!
-//! Design principles:
-//! - **No hardcoded backgrounds.**  Every style uses `Color::Reset` (or omits
-//!   `.bg()`) so the terminal's native background — including compositor blur —
-//!   shines through.
+//! Glyphs come in two sets: Nerd Font icons (default) and a plain-Unicode
+//! fallback (`general.nerd_font = false` or `--no-nerd-font`) that renders in
+//! any font.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::config;
 
-// ─── Config-backed palette accessors ────────────────────────────────────────
+// ─── Palette ────────────────────────────────────────────────────────────────
 
 #[inline]
 fn palette() -> &'static config::Palette {
     &config::get().theme.palette
 }
 
-/// Primary accent — plasma cyan.
-pub fn cyan() -> Color {
+pub fn accent() -> Color {
     palette().accent_primary
 }
-
-/// Secondary accent — nebula violet.
-pub fn deep_purple() -> Color {
+pub fn accent2() -> Color {
     palette().accent_secondary
 }
-
-/// Error accent — dawn red.
-pub fn dawn_red() -> Color {
+pub fn red() -> Color {
     palette().accent_error
 }
-
-/// Primary body text — starlight.
-pub fn text_primary() -> Color {
+pub fn text() -> Color {
     palette().text_primary
 }
-
-/// Dimmed / secondary text — cosmic dust.
-pub fn text_dim() -> Color {
+pub fn muted() -> Color {
     palette().text_dim
 }
-
-/// Paired-but-not-connected — solar amber.
 pub fn amber() -> Color {
     palette().paired
 }
-
-/// Success / trusted — aurora green.
 pub fn green() -> Color {
     palette().success
 }
-
-/// Scanning spinner pulse — pulse cyan.
-pub fn scanning_pulse() -> Color {
+pub fn pulse() -> Color {
     palette().scanning
 }
+pub fn edge() -> Color {
+    palette().border_inactive
+}
 
-// ─── Composite styles ───────────────────────────────────────────────────────
+// ─── Styles ─────────────────────────────────────────────────────────────────
 
-/// Title / header style.
+pub fn fg(color: Color) -> Style {
+    Style::default().fg(color)
+}
+pub fn bold(color: Color) -> Style {
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
 pub fn title() -> Style {
-    Style::default().fg(cyan()).add_modifier(Modifier::BOLD)
+    bold(accent())
 }
-
-/// Normal list item.
-pub fn list_item() -> Style {
-    Style::default().fg(text_primary())
+pub fn body() -> Style {
+    fg(text())
 }
-
-/// Dimmed / secondary label.
 pub fn dim() -> Style {
-    Style::default().fg(text_dim())
+    fg(muted())
 }
-
-/// Currently selected row highlight — soft violet reversed bar.
+pub fn key() -> Style {
+    bold(accent())
+}
+pub fn section() -> Style {
+    bold(muted())
+}
+pub fn border() -> Style {
+    fg(edge())
+}
+pub fn border_focus() -> Style {
+    fg(accent())
+}
 pub fn selected() -> Style {
-    Style::default()
-        .fg(deep_purple())
-        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    bold(accent2())
 }
-
-/// Connected device accent.
-pub fn connected() -> Style {
-    Style::default().fg(cyan()).add_modifier(Modifier::BOLD)
-}
-
-/// Paired-but-not-connected.
-pub fn paired() -> Style {
-    Style::default().fg(amber())
-}
-
-/// Error / disconnect.
 pub fn error() -> Style {
-    Style::default().fg(dawn_red()).add_modifier(Modifier::BOLD)
+    bold(red())
 }
 
-/// Trusted badge.
-pub fn trusted() -> Style {
-    Style::default().fg(green())
+// ─── Glyphs ─────────────────────────────────────────────────────────────────
+
+static PLAIN: AtomicBool = AtomicBool::new(false);
+
+/// Switch to the plain-Unicode glyph set.
+pub fn use_plain_glyphs(plain: bool) {
+    PLAIN.store(plain, Ordering::Relaxed);
 }
 
-/// Active border (focused pane).
-pub fn border_active() -> Style {
-    Style::default().fg(cyan())
+fn nerd() -> bool {
+    !PLAIN.load(Ordering::Relaxed)
 }
 
-/// Inactive border — slightly lighter than dim text so panes stay legible.
-pub fn border_inactive() -> Style {
-    Style::default().fg(palette().border_inactive)
+macro_rules! glyphs {
+    ($($name:ident: $nerd:literal, $plain:literal;)*) => {
+        $(pub fn $name() -> &'static str { if nerd() { $nerd } else { $plain } })*
+    };
 }
 
-// ─── RSSI signal strength helpers ───────────────────────────────────────────
-
-/// Return a Nerd Font signal-strength icon and colour for the given RSSI.
-pub fn rssi_display(rssi: Option<i16>) -> (&'static str, Color) {
-    match rssi {
-        Some(r) if r >= -50 => ("󰤨", green()),    // excellent
-        Some(r) if r >= -60 => ("󰤥", cyan()),     // good
-        Some(r) if r >= -70 => ("󰤢", amber()),    // fair
-        Some(r) if r >= -80 => ("󰤟", dawn_red()), // weak
-        Some(_) => ("󰤯", dawn_red()),             // very weak
-        None => ("󰤮", text_dim()),                // unknown / not in range
-    }
+glyphs! {
+    logo: "󰂯", "ᛒ";
+    power: "⏻", "⏻";
+    connected_badge: "󰂱", "●";
+    paired_badge: "󰌾", "◆";
+    trusted_badge: "󰄬", "✓";
+    search_icon: "", "/";
+    help_icon: "󰋖", "?";
+    ok_icon: "", "✓";
+    err_icon: "", "✗";
+    info_icon: "", "i";
+    lock_icon: "󰌾", "◆";
+    sort_glyph: "󰒺", "⇅";
+    battery_full: "󰁹", "▮";
+    battery_mid: "󰁿", "▮";
+    battery_low: "󰁻", "▯";
+    battery_empty: "󰂎", "▯";
 }
 
-/// Return an RSSI bar string (1-5 blocks).
-pub fn rssi_bar(rssi: Option<i16>) -> &'static str {
-    match rssi {
-        Some(r) if r >= -50 => "█████",
-        Some(r) if r >= -60 => "████░",
-        Some(r) if r >= -70 => "███░░",
-        Some(r) if r >= -80 => "██░░░",
-        Some(_) => "█░░░░",
-        None => "░░░░░",
-    }
-}
-
-// ─── Device type → Nerd Font icon mapping ───────────────────────────────────
-
-/// Map a BlueZ `icon` property (freedesktop icon name) to a Nerd Font glyph.
+/// Map a BlueZ `icon` property (freedesktop icon name) or class to a glyph.
 pub fn device_icon(icon: Option<&str>, class: Option<u32>) -> &'static str {
-    if let Some(icon) = icon {
-        match icon {
-            s if s.contains("audio-headset") || s.contains("audio-headphones") => "\u{f025}",
-            s if s.contains("audio-card") || s.contains("speaker") => "󰓃",
-            s if s.contains("phone") => "\u{f095}",
-            s if s.contains("computer") => "󰍽",
-            s if s.contains("input-keyboard") => "󰌌",
-            s if s.contains("input-mouse") => "󰍽",
-            s if s.contains("input-gaming") => "󰊗",
-            s if s.contains("input-tablet") => "󰓶",
-            s if s.contains("camera") => "󰄀",
-            s if s.contains("printer") => "󰐪",
-            s if s.contains("network") => "󰈀",
-            s if s.contains("video-display") || s.contains("monitor") => "󰍹",
-            _ => "󰂯",
-        }
-    } else if let Some(cls) = class {
-        let major = (cls >> 8) & 0x1F;
-        match major {
-            1 => "󰍽",
-            2 => "\u{f095}",
-            3 => "󰈀",
-            4 => "󰓃",
-            5 => "󰌌",
-            6 => "󰄀",
-            7 => "󰌚",
-            _ => "󰂯",
+    let kind = device_kind(icon, class);
+    if nerd() {
+        match kind {
+            DeviceKind::Headphones => "󰋋",
+            DeviceKind::Speaker => "󰓃",
+            DeviceKind::Phone => "󰏲",
+            DeviceKind::Computer => "󰌢",
+            DeviceKind::Keyboard => "󰌌",
+            DeviceKind::Mouse => "󰍽",
+            DeviceKind::Gamepad => "󰊗",
+            DeviceKind::Tablet => "󰓶",
+            DeviceKind::Camera => "󰄀",
+            DeviceKind::Printer => "󰐪",
+            DeviceKind::Watch => "󰖉",
+            DeviceKind::Display => "󰍹",
+            DeviceKind::Network => "󰈀",
+            DeviceKind::Health => "󰋑",
+            DeviceKind::Other => "󰂯",
         }
     } else {
-        "󰂯"
+        match kind {
+            DeviceKind::Headphones | DeviceKind::Speaker => "♪",
+            DeviceKind::Phone => "☎",
+            DeviceKind::Keyboard => "⌨",
+            DeviceKind::Watch => "◷",
+            DeviceKind::Gamepad => "✚",
+            DeviceKind::Health => "♥",
+            _ => "•",
+        }
     }
 }
 
-// ─── Spinner frames ─────────────────────────────────────────────────────────
-
-/// Braille-dot spinner frames for the scanning animation.
-pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Get the current spinner frame for a given tick count.
-pub fn spinner_frame(tick: u64) -> &'static str {
-    let idx = (tick as usize) % SPINNER_FRAMES.len();
-    // SAFETY: modulo guarantees idx < len for non-empty slice (compile-time constant).
-    SPINNER_FRAMES.get(idx).copied().unwrap_or("⠋")
+/// Coarse device category, for icons and the "Type" detail row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    Headphones,
+    Speaker,
+    Phone,
+    Computer,
+    Keyboard,
+    Mouse,
+    Gamepad,
+    Tablet,
+    Camera,
+    Printer,
+    Watch,
+    Display,
+    Network,
+    Health,
+    Other,
 }
 
-// ─── Animation easing ───────────────────────────────────────────────────────
+impl DeviceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Headphones => "Headphones",
+            Self::Speaker => "Speaker",
+            Self::Phone => "Phone",
+            Self::Computer => "Computer",
+            Self::Keyboard => "Keyboard",
+            Self::Mouse => "Mouse",
+            Self::Gamepad => "Game controller",
+            Self::Tablet => "Tablet",
+            Self::Camera => "Camera",
+            Self::Printer => "Printer",
+            Self::Watch => "Watch",
+            Self::Display => "Display",
+            Self::Network => "Network",
+            Self::Health => "Health device",
+            Self::Other => "Bluetooth device",
+        }
+    }
+}
 
-/// Cubic ease-out: fast start, smooth deceleration.
-/// Input `t` in [0.0, 1.0], output in [0.0, 1.0].
-#[inline]
+pub fn device_kind(icon: Option<&str>, class: Option<u32>) -> DeviceKind {
+    if let Some(icon) = icon {
+        let kind = match icon {
+            s if s.contains("headset") || s.contains("headphones") => DeviceKind::Headphones,
+            s if s.contains("audio") || s.contains("speaker") => DeviceKind::Speaker,
+            s if s.contains("phone") => DeviceKind::Phone,
+            s if s.contains("computer") => DeviceKind::Computer,
+            s if s.contains("keyboard") => DeviceKind::Keyboard,
+            s if s.contains("mouse") => DeviceKind::Mouse,
+            s if s.contains("gaming") => DeviceKind::Gamepad,
+            s if s.contains("tablet") => DeviceKind::Tablet,
+            s if s.contains("camera") => DeviceKind::Camera,
+            s if s.contains("printer") => DeviceKind::Printer,
+            s if s.contains("watch") => DeviceKind::Watch,
+            s if s.contains("display") || s.contains("monitor") => DeviceKind::Display,
+            s if s.contains("network") || s.contains("modem") => DeviceKind::Network,
+            _ => DeviceKind::Other,
+        };
+        if kind != DeviceKind::Other {
+            return kind;
+        }
+    }
+    match class.map(|c| (c >> 8) & 0x1F) {
+        Some(1) => DeviceKind::Computer,
+        Some(2) => DeviceKind::Phone,
+        Some(3) => DeviceKind::Network,
+        Some(4) => DeviceKind::Headphones,
+        Some(5) => DeviceKind::Keyboard,
+        Some(6) => DeviceKind::Printer,
+        Some(7) => DeviceKind::Watch,
+        Some(9) => DeviceKind::Health,
+        _ => DeviceKind::Other,
+    }
+}
+
+// ─── Signal & battery ───────────────────────────────────────────────────────
+
+/// Signal quality bucket 0–4 for an RSSI reading.
+pub fn signal_level(rssi: Option<i16>) -> u8 {
+    match rssi {
+        Some(r) if r >= -55 => 4,
+        Some(r) if r >= -67 => 3,
+        Some(r) if r >= -78 => 2,
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+pub fn signal_color(level: u8) -> Color {
+    match level {
+        4 => green(),
+        3 => accent(),
+        2 => amber(),
+        1 => red(),
+        _ => muted(),
+    }
+}
+
+pub fn signal_label(level: u8) -> &'static str {
+    match level {
+        4 => "Excellent",
+        3 => "Good",
+        2 => "Fair",
+        1 => "Weak",
+        _ => "Out of range",
+    }
+}
+
+/// Four rising bars: ▂▄▆█, with the unlit ones returned separately.
+pub fn signal_bars(level: u8) -> (&'static str, &'static str) {
+    const BARS: &str = "▂▄▆█";
+    // Each bar is 3 bytes in UTF-8.
+    let lit = usize::from(level.min(4)) * 3;
+    (&BARS[..lit], &BARS[lit..])
+}
+
+pub fn battery_glyph(pct: u8) -> (&'static str, Color) {
+    match pct {
+        70..=100 => (battery_full(), green()),
+        40..=69 => (battery_mid(), accent()),
+        15..=39 => (battery_low(), amber()),
+        _ => (battery_empty(), red()),
+    }
+}
+
+// ─── Animation ──────────────────────────────────────────────────────────────
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Spinner frame for a time in milliseconds (12.5 fps regardless of tick rate).
+pub fn spinner(elapsed_ms: u128) -> &'static str {
+    let len = SPINNER.len() as u128;
+    let idx = usize::try_from((elapsed_ms / 80) % len).unwrap_or(0);
+    SPINNER[idx]
+}
+
+/// Cubic ease-out: fast start, smooth deceleration. `t` in [0, 1].
 pub fn ease_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Exponential ease-out: snappy entrance with gentle settle.
-/// Input `t` in [0.0, 1.0], output in [0.0, 1.0].
-#[inline]
-#[allow(dead_code)]
-pub fn ease_out_expo(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t >= 1.0 {
-        1.0
-    } else {
-        1.0 - 2.0_f32.powf(-10.0 * t)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_bars_split_lit_and_unlit() {
+        assert_eq!(signal_bars(0), ("", "▂▄▆█"));
+        assert_eq!(signal_bars(2), ("▂▄", "▆█"));
+        assert_eq!(signal_bars(9), ("▂▄▆█", ""));
     }
-}
 
-// ─── Battery display ────────────────────────────────────────────────────────
-
-/// Return a Nerd Font battery icon and colour for the given percentage.
-pub fn battery_display(pct: Option<u8>) -> (&'static str, Color) {
-    match pct {
-        Some(p) if p >= 80 => ("󰁹", green()),
-        Some(p) if p >= 60 => ("󰂁", cyan()),
-        Some(p) if p >= 40 => ("󰁿", amber()),
-        Some(p) if p >= 20 => ("󰁻", dawn_red()),
-        Some(_) => ("󰁺", dawn_red()),
-        None => ("󰂃", text_dim()),
+    #[test]
+    fn kind_falls_back_to_class() {
+        assert_eq!(
+            device_kind(Some("audio-headset"), None),
+            DeviceKind::Headphones
+        );
+        assert_eq!(device_kind(None, Some(0x240404)), DeviceKind::Headphones);
+        assert_eq!(
+            device_kind(Some("weird"), Some(0x000540)),
+            DeviceKind::Keyboard
+        );
+        assert_eq!(device_kind(None, None), DeviceKind::Other);
     }
-}
-
-/// Return a Nerd Font sort icon for the active sort mode.
-pub fn sort_icon(mode: crate::config::SortMode) -> &'static str {
-    match mode {
-        crate::config::SortMode::Default => "󰒺",
-        crate::config::SortMode::Name => "󰈏",
-        crate::config::SortMode::Rssi => "󰤨",
-        crate::config::SortMode::Address => "󰩟",
-    }
-}
-
-// ─── Pending Operation Pulse Styles ─────────────────────────────────────────
-
-pub fn connecting_pulse() -> Style {
-    Style::default().fg(cyan()).add_modifier(Modifier::BOLD)
-}
-
-pub fn disconnecting_pulse() -> Style {
-    Style::default().fg(dawn_red()).add_modifier(Modifier::BOLD)
-}
-
-pub fn pairing_pulse() -> Style {
-    Style::default().fg(amber()).add_modifier(Modifier::BOLD)
-}
-
-pub fn removing_pulse() -> Style {
-    Style::default().fg(text_dim()).add_modifier(Modifier::BOLD)
 }

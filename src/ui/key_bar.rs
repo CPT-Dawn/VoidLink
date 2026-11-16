@@ -1,146 +1,135 @@
-//! Persistent key instruction bar at the bottom of the screen.
-//!
-//! Shows context-aware keybindings in a compact, styled row that adapts
-//! to the current input mode (Normal, Search, Dialog, Rename).
+//! Bottom hint bar. Shows the keys that matter right now (using the user's
+//! remapped keys), dropping lower-priority hints on narrow terminals. In
+//! search and rename modes it becomes the input line.
 
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, InputMode};
+use super::hint;
+use crate::app::{App, Modal, Mode};
+use crate::config::{self, key_label};
 use crate::theme;
 
-/// Render the key-hint bar into the given area.
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let spans = match app.input_mode {
-        InputMode::Normal => normal_hints(app),
-        InputMode::Search => search_hints(),
-        InputMode::Dialog => dialog_hints(),
-        InputMode::Rename => rename_hints(),
+    let line = match (&app.modal, app.mode) {
+        (Some(_), _) => modal_hints(app),
+        (None, Mode::Search) => input_line(
+            &format!("{} ", theme::search_icon()),
+            &app.search_query,
+            app.search_error.as_deref(),
+            "Enter keep · Esc clear · start with / for regex",
+        ),
+        (None, Mode::Rename) => input_line(
+            "Rename  ",
+            &app.rename_buffer,
+            None,
+            "Enter save · Esc cancel",
+        ),
+        (None, Mode::Normal) => fit(normal_hints(app), usize::from(area.width)),
     };
-
-    let line = Line::from(spans);
-    let bar = Paragraph::new(line).alignment(Alignment::Center);
-    frame.render_widget(bar, area);
+    let alignment = if app.mode == Mode::Normal || app.modal.is_some() {
+        Alignment::Center
+    } else {
+        Alignment::Left
+    };
+    frame.render_widget(Paragraph::new(line).alignment(alignment), area);
 }
 
-fn key(s: &str) -> Span<'_> {
-    Span::styled(
-        s,
-        Style::default()
-            .fg(theme::cyan())
-            .add_modifier(Modifier::BOLD),
-    )
+fn input_line(prompt: &str, text: &str, error: Option<&str>, help: &str) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(prompt.to_string(), theme::bold(theme::accent2())),
+        Span::styled(text.to_string(), theme::bold(theme::text())),
+        Span::styled("▏", theme::bold(theme::accent())),
+        Span::raw("   "),
+    ];
+    match error {
+        Some(e) => spans.push(Span::styled(e.to_string(), theme::error())),
+        None => spans.push(Span::styled(help.to_string(), theme::dim())),
+    }
+    Line::from(spans)
 }
 
-/// Description style: dimmed.
-fn desc(s: &str) -> Span<'_> {
-    Span::styled(format!(" {s}"), Style::default().fg(theme::text_dim()))
-}
+/// Hints in priority order; the last two (help, quit) are always kept.
+fn normal_hints(app: &App) -> Vec<Vec<Span<'static>>> {
+    let kb = &config::get().keys;
+    let k = |code| key_label(code);
+    let mut hints = Vec::new();
 
-/// Separator between groups.
-fn sep() -> Span<'static> {
-    Span::styled("  │  ", Style::default().fg(theme::deep_purple()))
-}
-
-fn normal_hints(app: &App) -> Vec<Span<'static>> {
-    let mut hints: Vec<Span<'static>> = Vec::with_capacity(40);
-
-    // Navigation.
-    hints.push(key("↑/↓"));
-    hints.push(desc("Navigate"));
-    hints.push(sep());
-
-    // Connect / disconnect (contextual).
-    if let Some(device) = app.selected_device() {
-        if device.connected {
-            hints.push(key("⏎"));
-            hints.push(desc("Disconnect"));
-        } else {
-            hints.push(key("⏎"));
-            hints.push(desc("Connect"));
+    if let Some(d) = app.selected_device() {
+        let label = if d.connected { "Disconnect" } else { "Connect" };
+        hints.push(hint(&k(kb.connect_toggle), label));
+    }
+    hints.push(hint(
+        &k(kb.toggle_scan),
+        if app.scanning { "Stop scan" } else { "Scan" },
+    ));
+    hints.push(hint(&k(kb.search), "Search"));
+    if let Some(d) = app.selected_device() {
+        if !d.paired {
+            hints.push(hint(&k(kb.pair), "Pair"));
         }
-    } else {
-        hints.push(key("⏎"));
-        hints.push(desc("Connect"));
+        hints.push(hint(
+            &k(kb.trust),
+            if d.trusted { "Untrust" } else { "Trust" },
+        ));
+        hints.push(hint(&k(kb.rename), "Rename"));
+        if d.is_known() {
+            hints.push(hint(&k(kb.remove), "Forget"));
+        }
     }
-    hints.push(sep());
-
-    hints.push(key("p"));
-    hints.push(desc("Pair"));
-    hints.push(sep());
-
-    hints.push(key("t"));
-    hints.push(desc("Trust"));
-    hints.push(sep());
-
-    hints.push(key("r"));
-    hints.push(desc("Remove"));
-    hints.push(sep());
-
-    hints.push(key("A"));
-    hints.push(desc("Rename"));
-    hints.push(sep());
-
-    // Adapter.
-    if app.adapter.powered {
-        hints.push(key("a"));
-        hints.push(desc("Power Off"));
-    } else {
-        hints.push(key("a"));
-        hints.push(desc("Power On"));
-    }
-    hints.push(sep());
-
-    if app.scanning {
-        hints.push(key("s"));
-        hints.push(desc("Stop Scan"));
-    } else {
-        hints.push(key("s"));
-        hints.push(desc("Scan"));
-    }
-    hints.push(sep());
-
-    hints.push(key("/"));
-    hints.push(desc("Search"));
-    hints.push(sep());
-
-    hints.push(key("?"));
-    hints.push(desc("Help"));
-    hints.push(sep());
-
-    hints.push(key("q"));
-    hints.push(desc("Quit"));
-
+    hints.push(hint(
+        &k(kb.toggle_adapter),
+        if app.adapter.powered {
+            "Power off"
+        } else {
+            "Power on"
+        },
+    ));
+    hints.push(hint(&k(kb.cycle_sort), "Sort"));
+    hints.push(hint(&k(kb.help), "Help"));
+    hints.push(hint(&k(kb.quit), "Quit"));
     hints
 }
 
-fn search_hints() -> Vec<Span<'static>> {
-    vec![
-        key("⏎"),
-        desc("Confirm"),
-        sep(),
-        key("Esc"),
-        desc("Cancel"),
-        sep(),
-        desc("Type to filter devices… (prefix / for regex)"),
-    ]
+fn modal_hints(app: &App) -> Line<'static> {
+    let hints = match &app.modal {
+        Some(Modal::Prompt(p)) if p.needs_input() => {
+            vec![hint("Enter", "Submit"), hint("Esc", "Cancel")]
+        }
+        Some(Modal::Prompt(_)) => vec![hint("y", "Accept"), hint("n", "Reject")],
+        Some(Modal::ConfirmRemove(_)) => vec![hint("y", "Forget"), hint("n", "Cancel")],
+        _ => vec![hint("Esc", "Close")],
+    };
+    fit(hints, usize::MAX)
 }
 
-fn dialog_hints() -> Vec<Span<'static>> {
-    vec![key("Esc"), desc("Dismiss"), sep(), key("⏎"), desc("OK")]
-}
+/// Join hints with gaps, keeping as many as fit. The final two are reserved.
+fn fit(hints: Vec<Vec<Span<'static>>>, width: usize) -> Line<'static> {
+    const GAP: usize = 3;
+    let w = |h: &Vec<Span>| h.iter().map(Span::width).sum::<usize>();
+    let n = hints.len();
+    let reserved: usize = hints
+        .iter()
+        .skip(n.saturating_sub(2))
+        .map(|h| w(h) + GAP)
+        .sum();
 
-fn rename_hints() -> Vec<Span<'static>> {
-    vec![
-        key("⏎"),
-        desc("Confirm Rename"),
-        sep(),
-        key("Esc"),
-        desc("Cancel"),
-        sep(),
-        desc("Type new alias…"),
-    ]
+    let mut used = reserved;
+    let mut spans = Vec::new();
+    for (i, h) in hints.into_iter().enumerate() {
+        let is_reserved = i + 2 >= n;
+        if !is_reserved {
+            if used + w(&h) + GAP > width {
+                continue;
+            }
+            used += w(&h) + GAP;
+        }
+        if !spans.is_empty() {
+            spans.push(Span::raw(" ".repeat(GAP)));
+        }
+        spans.extend(h);
+    }
+    Line::from(spans)
 }

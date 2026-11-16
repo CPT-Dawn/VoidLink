@@ -1,176 +1,178 @@
-//! Detail panel for the currently selected device.
+//! Details of the selected device, with the actions available for it.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, PendingOperation};
+use super::{panel, truncate};
+use crate::app::App;
+use crate::bluetooth::types::DeviceInfo;
+use crate::config::{self, key_label};
 use crate::theme;
 
+const LABEL_W: usize = 10;
+
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(Span::styled(" Details ", theme::title()))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border_inactive());
-
-    let Some(device) = app.selected_device() else {
-        let placeholder = Paragraph::new(Line::from(vec![Span::styled(
-            "  Select a device to view details",
-            theme::dim(),
-        )]))
-        .block(block);
-        frame.render_widget(placeholder, area);
-        return;
-    };
-
+    let block = panel(" Details ", false);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split inner area into named rows.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // 0: name
-            Constraint::Length(1), // 1: address
-            Constraint::Length(1), // 2: spacer
-            Constraint::Length(1), // 3: status badges
-            Constraint::Length(1), // 4: spacer
-            Constraint::Length(1), // 5: RSSI label
-            Constraint::Length(1), // 6: RSSI gauge
-            Constraint::Length(1), // 7: spacer
-            Constraint::Length(1), // 8: battery label
-            Constraint::Length(1), // 9: battery gauge
-            Constraint::Length(1), // 10: spacer
-            Constraint::Length(1), // 11: device class
-            Constraint::Length(1), // 12: icon type
-            Constraint::Min(0),    // 13: rest
-        ])
-        .split(inner);
+    let Some(d) = app.selected_device() else {
+        let hint = Paragraph::new(Line::from(Span::styled(
+            "Select a device to see its details",
+            theme::dim(),
+        )))
+        .centered();
+        let y = inner.y + inner.height / 2;
+        frame.render_widget(
+            hint,
+            Rect {
+                y,
+                height: 1.min(inner.height),
+                ..inner
+            },
+        );
+        return;
+    };
 
-    // Safe: we have exactly 14 constraints, so 14 rects.
-    // Use .get() for every access — silently skip if terminal is too small.
-    macro_rules! row {
-        ($idx:expr) => {
-            match chunks.get($idx) {
-                Some(&r) => r,
-                None => return,
-            }
-        };
+    let width = usize::from(inner.width);
+    let kind = theme::device_kind(d.icon.as_deref(), d.class);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{}  ", theme::device_icon(d.icon.as_deref(), d.class)),
+                theme::bold(theme::accent()),
+            ),
+            Span::styled(
+                truncate(&d.label(), width.saturating_sub(3)),
+                theme::bold(theme::text()),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("   {} · {}", kind.label(), d.address),
+            theme::dim(),
+        )),
+        Line::raw(""),
+    ];
+
+    lines.push(row("Status", status_spans(app, d)));
+    lines.push(row(
+        "Paired",
+        vec![
+            yes_no(d.paired, theme::amber()),
+            Span::styled("   Trusted ", theme::dim()),
+            yes_no(d.trusted, theme::green()),
+        ],
+    ));
+
+    let level = theme::signal_level(d.rssi);
+    let (lit, unlit) = theme::signal_bars(level);
+    let mut signal = vec![
+        Span::styled(lit, theme::fg(theme::signal_color(level))),
+        Span::styled(unlit, theme::fg(theme::edge())),
+        Span::styled(format!("  {}", theme::signal_label(level)), theme::body()),
+    ];
+    if let Some(rssi) = d.rssi {
+        signal.push(Span::styled(format!(" ({rssi} dBm)"), theme::dim()));
+    }
+    lines.push(row("Signal", signal));
+
+    if let Some(pct) = d.battery {
+        let (_, color) = theme::battery_glyph(pct);
+        let bar_w = 10usize;
+        let lit = usize::from(pct).div_ceil(10).min(bar_w);
+        lines.push(row(
+            "Battery",
+            vec![
+                Span::styled("━".repeat(lit), theme::fg(color)),
+                Span::styled("━".repeat(bar_w - lit), theme::fg(theme::edge())),
+                Span::styled(format!("  {pct}%"), theme::body()),
+            ],
+        ));
     }
 
-    // ── Name ────────────────────────────────────────────────────────────
-    let pending_op = app.pending_ops.get(&device.address);
-    let icon_span = match pending_op {
-        Some(PendingOperation::Connecting) => Span::styled(
-            format!("  {} ", theme::spinner_frame(app.tick_count)),
-            theme::connecting_pulse(),
-        ),
-        Some(PendingOperation::Disconnecting) => Span::styled(
-            format!("  {} ", theme::spinner_frame(app.tick_count)),
-            theme::disconnecting_pulse(),
-        ),
-        Some(PendingOperation::Pairing) => Span::styled(
-            format!("  {} ", theme::spinner_frame(app.tick_count)),
-            theme::pairing_pulse(),
-        ),
-        Some(PendingOperation::Removing) => Span::styled(
-            format!("  {} ", theme::spinner_frame(app.tick_count)),
-            theme::removing_pulse(),
-        ),
-        None => {
-            let icon = theme::device_icon(device.icon.as_deref(), device.class);
-            Span::styled(format!("  {icon} "), theme::title())
+    // Actions for this device.
+    if inner.height as usize > lines.len() + 3 {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("ACTIONS ", theme::section()),
+            Span::styled(
+                "─".repeat(width.saturating_sub(8)),
+                theme::fg(theme::edge()),
+            ),
+        ]));
+        for (key, label) in actions(d) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key:<LABEL_W$}"), theme::key()),
+                Span::styled(label, theme::body()),
+            ]));
         }
-    };
+    }
 
-    let name_line = Line::from(vec![
-        icon_span,
-        Span::styled(device.display_name(), theme::title()),
-    ]);
-    frame.render_widget(Paragraph::new(name_line), row!(0));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-    // ── Address ─────────────────────────────────────────────────────────
-    let addr_line = Line::from(vec![
-        Span::styled("  Address: ", theme::dim()),
-        Span::styled(device.address.to_string(), theme::list_item()),
-    ]);
-    frame.render_widget(Paragraph::new(addr_line), row!(1));
+fn row(label: &str, mut value: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::styled(format!("{label:<LABEL_W$}"), theme::dim())];
+    spans.append(&mut value);
+    Line::from(spans)
+}
 
-    // ── Status badges ───────────────────────────────────────────────────
-    let mut badge_spans = vec![Span::styled("  Status:  ", theme::dim())];
-    if device.connected {
-        badge_spans.push(Span::styled("● Connected  ", theme::connected()));
+fn yes_no(v: bool, color: ratatui::style::Color) -> Span<'static> {
+    if v {
+        Span::styled("Yes", theme::bold(color))
     } else {
-        badge_spans.push(Span::styled("○ Disconnected  ", theme::dim()));
+        Span::styled("No", theme::dim())
     }
-    if device.paired {
-        badge_spans.push(Span::styled("󰌾 Paired  ", theme::paired()));
+}
+
+fn status_spans(app: &App, d: &DeviceInfo) -> Vec<Span<'static>> {
+    if let Some(op) = app.pending.get(&d.address) {
+        return vec![Span::styled(
+            format!(
+                "{} {}…",
+                theme::spinner(app.elapsed_ms()),
+                op.progress_label()
+            ),
+            theme::bold(theme::accent()),
+        )];
+    }
+    if d.connected {
+        vec![Span::styled("● Connected", theme::bold(theme::accent()))]
+    } else if d.rssi.is_some() {
+        vec![Span::styled("○ Not connected", theme::body())]
     } else {
-        badge_spans.push(Span::styled("  Not Paired  ", theme::dim()));
+        vec![Span::styled("○ Not connected · out of range", theme::dim())]
     }
-    if device.trusted {
-        badge_spans.push(Span::styled("󰊕 Trusted", theme::trusted()));
-    } else {
-        badge_spans.push(Span::styled("  Not Trusted", theme::dim()));
+}
+
+fn actions(d: &DeviceInfo) -> Vec<(String, &'static str)> {
+    let kb = &config::get().keys;
+    let mut out = vec![(
+        key_label(kb.connect_toggle),
+        if d.connected {
+            "Disconnect"
+        } else if d.paired {
+            "Connect"
+        } else {
+            "Pair & connect"
+        },
+    )];
+    if !d.paired {
+        out.push((key_label(kb.pair), "Pair only"));
     }
-    frame.render_widget(Paragraph::new(Line::from(badge_spans)), row!(3));
-
-    // ── RSSI ────────────────────────────────────────────────────────────
-    let (rssi_icon, rssi_color) = theme::rssi_display(device.rssi);
-    let rssi_text = match device.rssi {
-        Some(r) => format!(
-            "  {rssi_icon} Signal: {r} dBm  {}",
-            theme::rssi_bar(device.rssi)
-        ),
-        None => format!("  {rssi_icon} Signal: N/A"),
-    };
-    let rssi_line = Line::from(Span::styled(rssi_text, Style::default().fg(rssi_color)));
-    frame.render_widget(Paragraph::new(rssi_line), row!(5));
-
-    // RSSI gauge (map -100..0 dBm to 0..100%).
-    if let Some(rssi) = device.rssi {
-        let pct = ((rssi.max(-100) + 100) as f64 / 100.0 * 100.0).clamp(0.0, 100.0) as u16;
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(rssi_color))
-            .percent(pct)
-            .label(format!("{pct}%"));
-        frame.render_widget(gauge, row!(6));
+    out.push((
+        key_label(kb.trust),
+        if d.trusted {
+            "Untrust"
+        } else {
+            "Trust (auto-reconnect)"
+        },
+    ));
+    out.push((key_label(kb.rename), "Rename"));
+    if d.is_known() {
+        out.push((key_label(kb.remove), "Forget device"));
     }
-
-    // ── Battery ─────────────────────────────────────────────────────────
-    let (bat_icon, bat_color) = theme::battery_display(device.battery);
-    let bat_text = match device.battery {
-        Some(pct) => format!("  {bat_icon} Battery: {pct}%"),
-        None => format!("  {bat_icon} Battery: N/A"),
-    };
-    let bat_line = Line::from(Span::styled(bat_text, Style::default().fg(bat_color)));
-    frame.render_widget(Paragraph::new(bat_line), row!(8));
-
-    if let Some(pct) = device.battery {
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(bat_color))
-            .percent(pct as u16)
-            .label(format!("{pct}%"));
-        frame.render_widget(gauge, row!(9));
-    }
-
-    // ── Device class / icon type ────────────────────────────────────────
-    if let Some(class) = device.class {
-        let class_line = Line::from(vec![
-            Span::styled("  Class:   ", theme::dim()),
-            Span::styled(format!("0x{class:06X}"), theme::list_item()),
-        ]);
-        frame.render_widget(Paragraph::new(class_line), row!(11));
-    }
-
-    if let Some(ref icon_name) = device.icon {
-        let icon_line = Line::from(vec![
-            Span::styled("  Type:    ", theme::dim()),
-            Span::styled(icon_name.as_str(), theme::list_item()),
-        ]);
-        frame.render_widget(Paragraph::new(icon_line), row!(12));
-    }
+    out
 }

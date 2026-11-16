@@ -1,11 +1,11 @@
-//! VoidLink — A blazing-fast, memory-safe Bluetooth TUI manager for Linux.
+//! VoidLink — a fast, keyboard-first Bluetooth manager for the terminal.
 //!
 //! Architecture:
-//! - **UI thread** (main): runs the ratatui render loop, processes key events.
+//! - **UI** (main task): runs the ratatui render loop and owns `App`.
 //! - **BT worker** (tokio task): owns the bluer Session/Adapter, talks D-Bus.
 //! - Two `mpsc` channels bridge them: `BtCommand` (UI→Worker), `BtEvent` (Worker→UI).
 //!
-//! The UI thread never touches D-Bus. The worker thread never touches the terminal.
+//! The UI never touches D-Bus; the worker never touches the terminal.
 
 mod app;
 mod bluetooth;
@@ -15,104 +15,226 @@ mod theme;
 mod tui;
 mod ui;
 
+use std::fs::File;
+use std::process::ExitCode;
+use std::sync::Mutex;
+
 use color_eyre::Result;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use app::{App, AppAction};
-use bluetooth::types::BtCommand;
+use app::{App, ToastKind};
+use bluetooth::types::{BtCommand, BtEvent};
 use event::Event;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // ── Error handling & logging ─────────────────────────────────────────
-    color_eyre::install()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
-        .with_target(false)
-        .with_writer(std::io::stderr) // TUI owns stdout; logs go to stderr
-        .init();
+const HELP: &str = "\
+VoidLink — a keyboard-first Bluetooth manager for your terminal
 
-    info!("VoidLink starting");
+USAGE:
+    voidlink [OPTIONS]
 
-    // ── Configuration ────────────────────────────────────────────────────
-    config::init()?;
+OPTIONS:
+    --no-nerd-font          Use plain Unicode symbols instead of Nerd Font icons
+    --no-mouse              Don't capture the mouse (keeps terminal text selection)
+    --print-default-config  Print the default config.toml and exit
+    --config-path           Print where the config file lives and exit
+    -h, --help              Show this help and exit
+    -V, --version           Show the version and exit
 
-    // ── Channel setup ───────────────────────────────────────────────────
-    let (bt_cmd_tx, bt_cmd_rx) = mpsc::channel::<BtCommand>(32);
-    let (bt_evt_tx, bt_evt_rx) = mpsc::channel(64);
+Press ? inside VoidLink to see every keybinding.
 
-    // ── Spawn Bluetooth worker (keep JoinHandle for crash detection) ────
-    let worker_handle = tokio::spawn(async move {
-        bluetooth::worker::run(bt_cmd_rx, bt_evt_tx).await;
-    });
+FILES:
+    ~/.config/voidlink/config.toml      Settings, colours and keybindings
+    ~/.local/state/voidlink/voidlink.log  Log (level via VOIDLINK_LOG, e.g. debug)
 
-    // ── Initialise terminal ─────────────────────────────────────────────
-    let mut terminal = tui::init()?;
+REQUIRES:
+    bluez with bluetooth.service running:  sudo systemctl enable --now bluetooth
+";
 
-    // ── App state ───────────────────────────────────────────────────────
-    let mut app = App::new(bt_cmd_tx.clone());
-    let mut events = event::EventHandler::new(bt_evt_rx);
+#[derive(Debug, Default)]
+struct Cli {
+    no_nerd_font: bool,
+    no_mouse: bool,
+}
 
-    // ── Auto-scan on startup (if configured) ────────────────────────────
-    if config::get().general.scan_on_startup {
-        let _ = bt_cmd_tx.try_send(BtCommand::StartScan);
+fn parse_args() -> Result<Option<Cli>, String> {
+    let mut cli = Cli::default();
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{HELP}");
+                return Ok(None);
+            }
+            "-V" | "--version" => {
+                println!("voidlink {}", env!("CARGO_PKG_VERSION"));
+                return Ok(None);
+            }
+            "--print-default-config" => {
+                print!("{}", config::default_config_str());
+                return Ok(None);
+            }
+            "--config-path" => {
+                println!("{}", config::config_path().display());
+                return Ok(None);
+            }
+            "--no-nerd-font" => cli.no_nerd_font = true,
+            "--no-mouse" => cli.no_mouse = true,
+            other => return Err(format!("unknown option '{other}'. Try 'voidlink --help'")),
+        }
+    }
+    Ok(Some(cli))
+}
+
+/// Log to `$XDG_STATE_HOME/voidlink/voidlink.log`. Never to the terminal:
+/// anything written to stdout/stderr while the TUI runs corrupts the screen.
+fn init_logging() {
+    let Some(dir) = directories::ProjectDirs::from("", "", "voidlink")
+        .and_then(|d| d.state_dir().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let Ok(file) = File::create(dir.join("voidlink.log")) else {
+        return;
+    };
+    let filter = EnvFilter::try_from_env("VOIDLINK_LOG")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_writer(Mutex::new(file))
+        .try_init();
+}
+
+fn main() -> ExitCode {
+    let cli = match parse_args() {
+        Ok(Some(cli)) => cli,
+        Ok(None) => return ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("voidlink: {msg}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if let Err(e) = color_eyre::install() {
+        eprintln!("voidlink: {e}");
+    }
+    init_logging();
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("voidlink: failed to start async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(run(cli)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!("{e:?}");
+            eprintln!("voidlink: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
+    info!("VoidLink {} starting", env!("CARGO_PKG_VERSION"));
+    let warnings = config::init();
+    let general = &config::get().general;
+    theme::use_plain_glyphs(cli.no_nerd_font || !general.nerd_font);
+
+    let (cmd_tx, cmd_rx) = mpsc::channel::<BtCommand>(64);
+    let (evt_tx, evt_rx) = mpsc::channel::<BtEvent>(256);
+    let worker = spawn_worker(cmd_rx, evt_tx);
+
+    let mut events = event::EventHandler::new(evt_rx)?;
+    let mut guard = tui::init(general.mouse && !cli.no_mouse)?;
+    let mut app = App::new();
+    for w in warnings {
+        app.toast(ToastKind::Error, w);
     }
 
-    // ── Main event loop ─────────────────────────────────────────────────
+    let mut worker_crashed = false;
     while app.running {
-        // Only redraw when the UI state has actually changed.
         if app.dirty {
-            terminal.draw(|frame| ui::render(frame, &app))?;
+            guard.terminal.draw(|frame| ui::render(frame, &mut app))?;
             app.dirty = false;
         }
 
-        // Detect worker crash.
-        if worker_handle.is_finished() {
-            warn!("Bluetooth worker exited unexpectedly");
-            app.push_error("Bluetooth worker crashed — restart VoidLink".into());
-        }
-
-        // Await next event (key / tick / BT).
-        match events.next().await? {
-            Event::Key(key) => {
-                let action = app.handle_key(key);
-                match action {
-                    AppAction::Quit => {
-                        app.running = false;
-                    }
-                    AppAction::BtCommand(cmd) => {
-                        // Non-blocking send; drop if worker is backed up.
-                        let _ = bt_cmd_tx.try_send(cmd);
-                    }
-                    AppAction::Consumed => {}
-                }
-            }
+        let command = match events.next(app.is_animating()).await? {
+            Event::Key(key) => app.handle_key(key),
+            Event::Mouse(m) => app.handle_mouse(m),
             Event::Tick => {
                 app.on_tick();
+                None
             }
-            Event::Bluetooth(bt_event) => {
-                app.handle_bt_event(bt_event);
+            Event::Bluetooth(evt) => {
+                app.handle_bt_event(evt);
+                None
             }
-            Event::Resize(_, _) => {
-                // Mark dirty so the next iteration redraws.
+            Event::Resize => {
                 app.dirty = true;
+                None
             }
+            Event::Terminate => {
+                app.running = false;
+                None
+            }
+        };
+
+        if let Some(cmd) = command {
+            if cmd_tx.try_send(cmd).is_err() {
+                app.toast(ToastKind::Error, "VoidLink is busy. Try again in a moment");
+            }
+        }
+
+        if !worker_crashed && worker.is_finished() {
+            worker_crashed = true;
+            error!("Bluetooth worker exited unexpectedly");
+            app.toast(
+                ToastKind::Error,
+                "The Bluetooth worker stopped unexpectedly. Please restart VoidLink",
+            );
         }
     }
 
-    // ── Cleanup ─────────────────────────────────────────────────────────
-    // Stop scanning before exiting so the adapter isn't left in discovery mode.
-    if app.scanning {
-        let _ = bt_cmd_tx.try_send(BtCommand::StopScan);
-        // Give the worker a moment to process the stop command.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    tui::restore()?;
+    // Closing the command channel makes the worker drop its discovery
+    // session (stopping the scan) and exit.
+    drop(cmd_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), worker).await;
+    drop(guard);
     info!("VoidLink exiting");
     Ok(())
+}
+
+#[cfg(not(feature = "demo"))]
+fn spawn_worker(
+    cmd_rx: mpsc::Receiver<BtCommand>,
+    evt_tx: mpsc::Sender<BtEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(bluetooth::worker::run(cmd_rx, evt_tx))
+}
+
+/// Demo builds (`--features demo`) run a scripted fake adapter when
+/// `VOIDLINK_DEMO=1`, for screenshots and recordings without real hardware.
+#[cfg(feature = "demo")]
+fn spawn_worker(
+    cmd_rx: mpsc::Receiver<BtCommand>,
+    evt_tx: mpsc::Sender<BtEvent>,
+) -> tokio::task::JoinHandle<()> {
+    if std::env::var_os("VOIDLINK_DEMO").is_some() {
+        tokio::spawn(bluetooth::demo::run(cmd_rx, evt_tx))
+    } else {
+        tokio::spawn(bluetooth::worker::run(cmd_rx, evt_tx))
+    }
 }

@@ -1218,6 +1218,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -1417,7 +1418,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "voidlink"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bluer",
  "color-eyre",
@@ -1428,9 +1429,11 @@ dependencies = [
  "regex",
  "serde",
  "tokio",
+ "tokio-stream",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
