@@ -14,7 +14,7 @@ pub fn humanize(err: &Error) -> String {
         return "Bluetooth is blocked by rfkill. Unblock it with: rfkill unblock bluetooth".into();
     }
     if lower.contains("profile-unavailable") || lower.contains("protocol not available") {
-        return "No audio profile is available. Install pipewire-pulse (or pulseaudio-bluetooth) and try again"
+        return "No audio profile is available. Install pipewire-audio (or pulseaudio-bluetooth) and try again"
             .into();
     }
     if lower.contains("page-timeout") || lower.contains("host is down") {
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn explains_missing_audio_stack() {
         let e = err(ErrorKind::Failed, "br-connection-profile-unavailable");
-        assert!(humanize(&e).contains("pipewire-pulse"));
+        assert!(humanize(&e).contains("pipewire-audio"));
     }
 
     #[test]

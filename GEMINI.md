@@ -21,7 +21,7 @@ The application follows a strict separation of concerns between the user interfa
 
 ## Tech Stack
 
-- **Language:** Rust (1.75+)
+- **Language:** Rust (1.88+)
 - **TUI:** `ratatui`, `crossterm`
 - **Bluetooth:** `bluer` (BlueZ interface)
 - **Async Runtime:** `tokio`
