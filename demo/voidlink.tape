@@ -1,10 +1,10 @@
-# VoidLink demo — rendered with https://github.com/charmbracelet/vhs
+# VoidLink demo, rendered with https://github.com/charmbracelet/vhs
 #
 #   cargo build --release --features demo --target-dir target/demo
-#   vhs demo/voidlink.tape
+#   vhs demo/voidlink.tape        # run from the repo root; writes assets/demo.mp4
 #
-# Uses the scripted demo adapter (VOIDLINK_DEMO=1), so no real devices or
-# MAC addresses appear in the recording.
+# Uses the scripted demo adapter (VOIDLINK_DEMO=1) and a home that doesn't
+# exist, so no real devices, addresses or paths appear in the recording.
 
 Output assets/demo.mp4
 
@@ -12,75 +12,66 @@ Require vhs
 
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font Mono"
-Set FontSize 28
-Set LineHeight 1.25
+Set FontSize 36
+Set LineHeight 1.2
 Set Width 2560
-Set Height 1440
+Set Height 1600
 Set Padding 36
 Set Margin 56
 Set MarginFill "#120b24"
 Set BorderRadius 16
 Set WindowBar Colorful
 Set WindowBarSize 48
-Set Framerate 30
+Set Framerate 25
 Set TypingSpeed 90ms
 Set CursorBlink false
 Set Theme { "name": "Void", "background": "#0b0d17", "foreground": "#e8e6f0", "cursor": "#00e5ff", "selection": "#2a2f4a", "black": "#0b0d17", "brightBlack": "#4a4e69", "red": "#ff4545", "brightRed": "#ff6b6b", "green": "#69f0ae", "brightGreen": "#69f0ae", "yellow": "#ffb74d", "brightYellow": "#ffd180", "blue": "#00e5ff", "brightBlue": "#18ffff", "magenta": "#bb86fc", "brightMagenta": "#d0a8ff", "cyan": "#00e5ff", "brightCyan": "#18ffff", "white": "#e8e6f0", "brightWhite": "#ffffff" }
 
-Env VOIDLINK_DEMO "1"
-
+# Launch off camera so the first frame is the populated app, not a prompt.
 Hide
-Type "clear && target/demo/release/voidlink"
+Type "clear && HOME=/home/demo XDG_CONFIG_HOME=/home/demo/.config XDG_STATE_HOME=/home/demo/.local/state VOIDLINK_DEMO=1 target/demo/release/voidlink"
 Enter
 Sleep 1.2s
 Show
 
-# Your devices, with live status and battery
-Sleep 2.2s
-Type "j"
-Sleep 1.1s
-Type "j"
-Sleep 1.1s
-Type "g"
-Sleep 0.8s
-
-# Scan for nearby devices
-Type "s"
-Sleep 4.6s
-
-# Find one with search
-Type "/"
-Sleep 0.5s
-Type@140ms "jbl"
-Sleep 0.8s
-Enter
-Sleep 1s
-
-# Connect: VoidLink pairs first and asks you to confirm the code
-Enter
-Sleep 3s
-Type "y"
-Sleep 3.2s
-
-# Back to the full list
-Escape
-Sleep 1.2s
-
-# Give it a friendlier name
-Type "A"
-Sleep 0.6s
-Ctrl+U
-Type@110ms "Living Room"
-Sleep 0.6s
-Enter
+# Beat 1: your devices, with live status, battery and signal
 Sleep 2.4s
 
-# Stop scanning, peek at the help
+# Beat 2: scan, and nearby devices stream in
 Type "s"
-Sleep 1s
-Type "?"
-Sleep 3.4s
+Sleep 3.6s
+
+# Beat 3: find one with search
+Type "/"
+Sleep 0.4s
+Type@140ms "jbl"
+Sleep 0.6s
+Enter
+Sleep 0.8s
+
+# Beat 4: connect; VoidLink pairs first and asks you to confirm the code
+Enter
+Sleep 2.6s
+Type "y"
+Sleep 2.8s
 Escape
-Sleep 1.2s
-Type "q"
+Sleep 0.8s
+
+# Beat 5: give it a friendlier name
+Type "A"
 Sleep 0.5s
+Ctrl+U
+Type@100ms "Living Room"
+Sleep 0.5s
+Enter
+Sleep 2s
+
+# Beat 6: every key, one keypress away
+Type "s"
+Sleep 0.6s
+Type "?"
+Sleep 2.8s
+
+# Close where it opened so the loop is seamless.
+Escape
+Sleep 1.5s

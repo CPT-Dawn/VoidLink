@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest something VoidLink should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: The solution you'd like
+      description: How you picture VoidLink handling it
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've tried

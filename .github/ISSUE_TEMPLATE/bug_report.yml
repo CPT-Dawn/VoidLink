@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in VoidLink doesn't work as it should
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: VoidLink version
+      description: Output of `voidlink --version`
+      placeholder: voidlink 1.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Distribution, terminal and install channel
+      placeholder: Arch Linux, kitty, voidlink-bin from the AUR
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Press s to scan
+        2. Select the device and press Enter
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Debug log
+      description: Run `VOIDLINK_LOG=debug voidlink`, reproduce the problem, then paste or attach `~/.local/state/voidlink/voidlink.log`. Remove device addresses you'd rather keep private.
+      render: text
