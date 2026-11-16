@@ -1,0 +1,159 @@
+name: Release
+
+# Push a tag like v1.2.0 to build Linux binaries, publish a GitHub release
+# (notes from CHANGELOG.md), and update the `voidlink` and `voidlink-bin`
+# AUR packages. Run it manually to re-publish the AUR packages for an
+# existing tag (e.g. after a pkgrel bump).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish to the AUR (e.g. v1.1.0)"
+        required: true
+      pkgrel:
+        description: "AUR pkgrel"
+        default: "1"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    if: github.event_name == 'push'
+    name: build ${{ matrix.arch }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Ubuntu 22.04 → glibc 2.35, so the binary also runs on older distros.
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check tag matches Cargo.toml
+        run: |
+          crate="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          test "v$crate" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME != Cargo.toml $crate"; exit 1; }
+      - run: cargo test --locked --release
+      - run: cargo build --locked --release
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dir="voidlink-$version-${{ matrix.arch }}-linux"
+          mkdir "$dir"
+          cp target/release/voidlink LICENSE README.md "$dir/"
+          cp default_config.toml "$dir/config.toml"
+          ./"$dir"/voidlink --version
+          tar -czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: voidlink-*-linux.tar.gz*
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Extract release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || echo "See CHANGELOG.md" > notes.md
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "VoidLink $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+
+  aur:
+    needs: release
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    name: aur ${{ matrix.pkg }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [voidlink, voidlink-bin]
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "VERSION=${tag#v}" >> "$GITHUB_ENV"
+          echo "PKGREL=${{ github.event.inputs.pkgrel || '1' }}" >> "$GITHUB_ENV"
+      - name: Prepare tools
+        run: |
+          pacman -Syu --noconfirm --needed git openssh namcap
+          useradd -m builder
+      - name: Configure SSH for the AUR
+        env:
+          AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$AUR_KEY" || { echo "AUR_SSH_PRIVATE_KEY is not set" >&2; exit 1; }
+          # ssh reads the passwd home (/root), not $HOME, inside containers.
+          mkdir -p /root/.ssh
+          if grep -q "BEGIN .*PRIVATE KEY" <<< "$AUR_KEY"; then
+            printf '%s\n' "$AUR_KEY" | tr -d '\r' > /root/.ssh/aur
+          else
+            printf '%s' "$AUR_KEY" | tr -d '\r\n' | base64 -d > /root/.ssh/aur
+          fi
+          chmod 600 /root/.ssh/aur
+          ssh-keygen -y -f /root/.ssh/aur > /dev/null
+          ssh-keyscan -t ed25519,rsa aur.archlinux.org >> /root/.ssh/known_hosts
+          printf 'Host aur.archlinux.org\n  User aur\n  IdentityFile /root/.ssh/aur\n  IdentitiesOnly yes\n' > /root/.ssh/config
+      - name: Render PKGBUILD and .SRCINFO
+        run: |
+          set -euo pipefail
+          git clone "ssh://aur@aur.archlinux.org/${{ matrix.pkg }}.git" aur
+          bash packaging/aur/render.sh "${{ matrix.pkg }}" "$VERSION" aur "$PKGREL"
+          chown -R builder aur
+          su builder -c "cd aur && makepkg --printsrcinfo > .SRCINFO"
+          namcap aur/PKGBUILD
+          cat aur/PKGBUILD
+      - name: Smoke-test the binary package
+        if: matrix.pkg == 'voidlink-bin'
+        run: |
+          pacman -S --noconfirm --needed bluez dbus
+          su builder -c "cd aur && makepkg -f --noconfirm"
+          pacman -U --noconfirm aur/voidlink-bin-*.pkg.tar.zst
+          voidlink --version
+      - name: Push to the AUR
+        run: |
+          set -euo pipefail
+          cd aur
+          git config --global --add safe.directory "$PWD"
+          git config user.name "CPT-Dawn"
+          git config user.email "ping@cptdawn.dev"
+          git add PKGBUILD .SRCINFO voidlink.install
+          if git diff --cached --quiet; then
+            echo "No changes for ${{ matrix.pkg }}"
+            exit 0
+          fi
+          git commit -m "Update to $VERSION-$PKGREL"
+          git push origin HEAD:master
