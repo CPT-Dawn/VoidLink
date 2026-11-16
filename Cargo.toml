@@ -2,7 +2,7 @@
 name = "voidlink"
 version = "1.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.88"
 license = "MIT"
 description = "A fast, keyboard-first Bluetooth manager for the Linux terminal"
 authors = ["Swastik Patel <ping@cptdawn.dev>"]

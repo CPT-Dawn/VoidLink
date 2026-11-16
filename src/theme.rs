@@ -109,11 +109,11 @@ glyphs! {
     connected_badge: "󰂱", "●";
     paired_badge: "󰌾", "◆";
     trusted_badge: "󰄬", "✓";
-    search_icon: "", "/";
+    search_icon: "\u{f002}", "/";
     help_icon: "󰋖", "?";
-    ok_icon: "", "✓";
-    err_icon: "", "✗";
-    info_icon: "", "i";
+    ok_icon: "\u{f00c}", "✓";
+    err_icon: "\u{f00d}", "✗";
+    info_icon: "\u{f05a}", "i";
     lock_icon: "󰌾", "◆";
     sort_glyph: "󰒺", "⇅";
     battery_full: "󰁹", "▮";
@@ -266,9 +266,10 @@ pub fn signal_label(level: u8) -> &'static str {
     }
 }
 
-/// Four rising bars: ▂▄▆█, with the unlit ones returned separately.
+/// Four rising bars: ▁▃▅▇, with the unlit ones returned separately.
+/// (No full-height block, so meters on adjacent rows never fuse together.)
 pub fn signal_bars(level: u8) -> (&'static str, &'static str) {
-    const BARS: &str = "▂▄▆█";
+    const BARS: &str = "▁▃▅▇";
     // Each bar is 3 bytes in UTF-8.
     let lit = usize::from(level.min(4)) * 3;
     (&BARS[..lit], &BARS[lit..])
@@ -305,10 +306,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn no_glyph_is_empty_in_either_set() {
+        for plain in [false, true] {
+            use_plain_glyphs(plain);
+            let all = [
+                logo(),
+                power(),
+                connected_badge(),
+                paired_badge(),
+                trusted_badge(),
+                search_icon(),
+                help_icon(),
+                ok_icon(),
+                err_icon(),
+                info_icon(),
+                lock_icon(),
+                sort_glyph(),
+                battery_full(),
+                battery_mid(),
+                battery_low(),
+                battery_empty(),
+            ];
+            assert!(all.iter().all(|g| !g.is_empty()), "plain={plain}: {all:?}");
+        }
+        use_plain_glyphs(false);
+    }
+
+    #[test]
     fn signal_bars_split_lit_and_unlit() {
-        assert_eq!(signal_bars(0), ("", "▂▄▆█"));
-        assert_eq!(signal_bars(2), ("▂▄", "▆█"));
-        assert_eq!(signal_bars(9), ("▂▄▆█", ""));
+        assert_eq!(signal_bars(0), ("", "▁▃▅▇"));
+        assert_eq!(signal_bars(2), ("▁▃", "▅▇"));
+        assert_eq!(signal_bars(9), ("▁▃▅▇", ""));
     }
 
     #[test]
